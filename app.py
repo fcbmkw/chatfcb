@@ -119,6 +119,19 @@ hide_streamlit_chrome = """
         overflow-x: hidden !important;
         max-width: 100vw !important;
     }
+
+    /* FIX: làm nổi bật expander "Compare N individual model responses" —
+    trước đó nó chỉ là 1 dòng chữ thường, rất dễ bị lướt qua/không nhận ra
+    là có thể bấm vào xem 3 câu trả lời gốc. Thêm viền màu + nền nhạt để
+    mắt người dùng dừng lại ở đây. */
+    .st-key-compare_wrap [data-testid="stExpander"] {
+        border: 1px solid rgba(255, 149, 0, 0.55) !important;
+        background: rgba(255, 149, 0, 0.06) !important;
+        border-radius: 10px !important;
+    }
+    .st-key-compare_wrap [data-testid="stExpander"] summary {
+        font-weight: 600 !important;
+    }
     </style>
 """
 st.markdown(hide_streamlit_chrome, unsafe_allow_html=True)
@@ -357,15 +370,16 @@ def build_pollinations_url(prompt_en: str, width: int = 1024, height: int = 1024
 def render_model_comparison(per_model: list[tuple[str, str]]):
     if not per_model:
         return
-    with st.expander(f"Compare {len(per_model)} individual model responses"):
-        cols = st.columns(len(per_model))
-        for col, (name, text) in zip(cols, per_model):
-            with col:
-                if is_error_text(text):
-                    st.error(f"**{name}**")
-                else:
-                    st.info(f"**{name}**")
-                st.write(text)
+    with st.container(key="compare_wrap"):
+        with st.expander(f"🔍 **Compare {len(per_model)} individual model responses** — click to see what each model said"):
+            cols = st.columns(len(per_model))
+            for col, (name, text) in zip(cols, per_model):
+                with col:
+                    if is_error_text(text):
+                        st.error(f"**{name}**")
+                    else:
+                        st.info(f"**{name}**")
+                    st.write(text)
 
 
 def build_leader_prompt(context_line: str, user_text: str, per_model: list[tuple[str, str]]) -> str:
