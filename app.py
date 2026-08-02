@@ -413,7 +413,7 @@ with st.container(key="app_header"):
                 </div>
                 <div style="font-size:0.85rem; opacity:0.65;
                             white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-                    Combines answers from several AI models into one cross-checked response.
+                    Combines answers from several AI models.
                 </div>
             </div>
             """,
