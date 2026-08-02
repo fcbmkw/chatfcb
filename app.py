@@ -23,16 +23,24 @@ from openai import AsyncOpenAI
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-st.set_page_config(page_title="Multi-Model AI Assistant", layout="wide")
-# Đoạn CSS ẩn icon GitHub và Footer mặc định của Streamlit
-hide_github_icon = """
+st.set_page_config(
+    page_title="Multi-Model AI Assistant",
+    layout="wide",
+    initial_sidebar_state="collapsed",  # start collapsed, like Claude's sidebar: just an icon until clicked
+)
+# CSS to hide Streamlit's default hamburger menu / footer watermark / toolbar
+# (Deploy button, GitHub icon, etc). IMPORTANT: do NOT hide `header` itself —
+# the sidebar's collapse/expand arrow lives inside it, so hiding `header`
+# would hide that arrow too and make the sidebar impossible to reopen once
+# collapsed.
+hide_streamlit_chrome = """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
+    [data-testid="stToolbar"] {visibility: hidden;}
     </style>
 """
-st.markdown(hide_github_icon, unsafe_allow_html=True)
+st.markdown(hide_streamlit_chrome, unsafe_allow_html=True)
 if not GEMINI_API_KEY or not GROQ_API_KEY:
     st.error(
         "Missing API key. Please set the GEMINI_API_KEY and GROQ_API_KEY "
@@ -263,14 +271,14 @@ st.caption("Combines answers from several AI models into one cross-checked respo
 
 def _new_conversation() -> str:
     conv_id = str(uuid.uuid4())
-    st.session_state.conversations[conv_id] = {"title": "Đoạn chat mới", "history": []}
+    st.session_state.conversations[conv_id] = {"title": "New chat", "history": []}
     st.session_state.current_id = conv_id
     return conv_id
 
 
 def _maybe_set_title(conv: dict, user_text: str):
     """First message in a conversation becomes its title in the sidebar."""
-    if conv["title"] == "Đoạn chat mới" and user_text:
+    if conv["title"] == "New chat" and user_text:
         conv["title"] = (user_text[:40] + "…") if len(user_text) > 40 else user_text
 
 
@@ -289,7 +297,7 @@ with st.sidebar:
         _new_conversation()
         st.rerun()
     st.divider()
-    st.caption("Lịch sử")
+    st.caption("History")
     # Newest conversation on top
     for conv_id, conv in reversed(list(st.session_state.conversations.items())):
         is_active = conv_id == st.session_state.current_id
@@ -298,7 +306,7 @@ with st.sidebar:
             st.session_state.current_id = conv_id
             st.rerun()
     st.divider()
-    st.caption("🎨 Gõ \"vẽ ảnh ...\" / \"tạo ảnh ...\" / \"generate image ...\" để tạo ảnh (Pollinations.ai).")
+    st.caption("🎨 Type \"draw ...\" / \"generate image ...\" to create an image (Pollinations.ai).")
 
 current_conv = st.session_state.conversations[st.session_state.current_id]
 
@@ -316,7 +324,7 @@ for turn in current_conv["history"]:
 # Chat input: Enter (or the built-in send arrow) submits; the "+" icon (via
 # accept_file) lets the user attach files, matching modern chat-app UIs.
 prompt = st.chat_input(
-    "Ask fcb anything... (hoặc gõ 'vẽ ảnh ...' để tạo ảnh)",
+    "Ask fcb anything... (or type 'draw ...' to generate an image)",
     accept_file="multiple",
     file_type=["txt", "md", "csv", "json", "py", "log"],
 )
@@ -335,7 +343,7 @@ if prompt:
                 st.write(user_text)
 
             with st.chat_message("assistant"):
-                with st.spinner("Đang dịch prompt sang tiếng Anh..."):
+                with st.spinner("Translating prompt to English..."):
                     prompt_en = asyncio.run(translate_prompt_to_english(user_text))
                 img_url = build_pollinations_url(prompt_en)
                 st.image(img_url, caption=f"Prompt: {prompt_en}")
