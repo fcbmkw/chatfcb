@@ -37,12 +37,11 @@ st.set_page_config(
     # toggle, at the cost of the sidebar being open on first load.
 )
 
-# CSS to hide Streamlit's default hamburger menu and "Deploy" button /
-# footer watermark. IMPORTANT: target these specific elements only —
-# do NOT hide the whole `header` or `[data-testid="stToolbar"]` container,
-# because the sidebar's re-open arrow (data-testid="stExpandSidebarButton")
-# lives inside that same toolbar. Hiding the whole toolbar hides that arrow
-# too, making a collapsed sidebar impossible to reopen.
+# CSS ẩn menu 3 chấm / nút Deploy / icon GitHub / badge "Manage app"...
+# Nút mở/đóng sidebar gốc của Streamlit nằm trong stToolbar nên cũng bị ẩn
+# theo — không sao, vì New Chat/History giờ dùng nút "«"/"»" tự viết
+# riêng (xem phần MULTI-CHAT SESSIONS bên dưới), không phụ thuộc nút gốc
+# của Streamlit nữa.
 hide_streamlit_chrome = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -60,25 +59,6 @@ hide_streamlit_chrome = """
 
     /* Thu gọn khoảng trắng thừa phía trên */
     .block-container { padding-top: 2rem; }
-
-    /* Ép SIDEBAR LUÔN MỞ, không cho đóng nữa. Lý do: nút mở lại
-    ("<<" / ">>") có tên data-testid đổi khác nhau tuỳ phiên bản
-    Streamlit, dò không trúng là mất luôn đường vào New Chat/History
-    (như vừa gặp). Ép mở vĩnh viễn bằng CSS thì không còn phụ thuộc
-    tên nút đó nữa — chắc chắn 100% New Chat/History luôn hiện. */
-    [data-testid="stSidebar"] {
-        min-width: 300px !important;
-        max-width: 300px !important;
-        width: 300px !important;
-        transform: none !important;
-        visibility: visible !important;
-    }
-    /* Ẩn nút đóng/mở vì giờ bấm cũng không còn tác dụng nữa */
-    [data-testid="stSidebarCollapseButton"],
-    [data-testid="collapsedControl"],
-    [data-testid="stSidebarCollapsedControl"] {
-        display: none !important;
-    }
     </style>
 """
 st.markdown(hide_streamlit_chrome, unsafe_allow_html=True)
@@ -357,22 +337,63 @@ if not st.session_state.conversations:
 if st.session_state.current_id not in st.session_state.conversations:
     st.session_state.current_id = next(iter(st.session_state.conversations))
 
+# Chế độ hiển thị của sidebar: tự quản lý bằng session_state, KHÔNG dùng
+# cơ chế collapse/expand có sẵn của Streamlit nữa (tên nút đó đổi khác
+# nhau tuỳ phiên bản, dễ bị kẹt-đóng như đã gặp). Bề rộng sidebar được
+# set động qua CSS theo giá trị này, nên toggle luôn hoạt động chắc chắn.
+if "sidebar_collapsed" not in st.session_state:
+    st.session_state.sidebar_collapsed = False
+
+_sidebar_width = "68px" if st.session_state.sidebar_collapsed else "300px"
+st.markdown(f"""
+    <style>
+    [data-testid="stSidebar"] {{
+        min-width: {_sidebar_width} !important;
+        max-width: {_sidebar_width} !important;
+        width: {_sidebar_width} !important;
+        transform: none !important;
+        visibility: visible !important;
+    }}
+    </style>
+""", unsafe_allow_html=True)
+
 with st.sidebar:
-    st.header("💬 Chats")
-    if st.button("➕ New Chat", use_container_width=True):
-        _new_conversation()
-        st.rerun()
-    st.divider()
-    st.caption("History")
-    # Newest conversation on top
-    for conv_id, conv in reversed(list(st.session_state.conversations.items())):
-        is_active = conv_id == st.session_state.current_id
-        label = ("🟢 " if is_active else "⚪ ") + conv["title"]
-        if st.button(label, key=f"conv_{conv_id}", use_container_width=True):
-            st.session_state.current_id = conv_id
+    if st.session_state.sidebar_collapsed:
+        # ---------------- CHẾ ĐỘ GỌN: chỉ icon ----------------
+        if st.button("»", key="expand_sidebar", help="Mở rộng", use_container_width=True):
+            st.session_state.sidebar_collapsed = False
             st.rerun()
-    st.divider()
-    st.caption("🎨 Type \"draw ...\" / \"generate image ...\" to create an image (Pollinations.ai).")
+        if st.button("➕", key="collapsed_new_chat", help="New Chat", use_container_width=True):
+            _new_conversation()
+            st.rerun()
+        if st.button("💬", key="collapsed_history", help="Chat History", use_container_width=True):
+            # Icon "History" ở chế độ gọn không đủ chỗ liệt kê tên chat,
+            # nên bấm vào sẽ mở rộng sidebar ra để xem danh sách đầy đủ.
+            st.session_state.sidebar_collapsed = False
+            st.rerun()
+    else:
+        # ---------------- CHẾ ĐỘ ĐẦY ĐỦ (như hiện tại) ----------------
+        head_col, collapse_col = st.columns([5, 1])
+        with head_col:
+            st.header("💬 Chats")
+        with collapse_col:
+            if st.button("«", key="collapse_sidebar", help="Thu gọn"):
+                st.session_state.sidebar_collapsed = True
+                st.rerun()
+        if st.button("➕ New Chat", use_container_width=True):
+            _new_conversation()
+            st.rerun()
+        st.divider()
+        st.caption("History")
+        # Newest conversation on top
+        for conv_id, conv in reversed(list(st.session_state.conversations.items())):
+            is_active = conv_id == st.session_state.current_id
+            label = ("🟢 " if is_active else "⚪ ") + conv["title"]
+            if st.button(label, key=f"conv_{conv_id}", use_container_width=True):
+                st.session_state.current_id = conv_id
+                st.rerun()
+        st.divider()
+        st.caption("🎨 Type \"draw ...\" / \"generate image ...\" to create an image (Pollinations.ai).")
 
 current_conv = st.session_state.conversations[st.session_state.current_id]
 
