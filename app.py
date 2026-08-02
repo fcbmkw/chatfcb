@@ -363,33 +363,70 @@ if "sidebar_collapsed" not in st.session_state:
 
 # ---------------------------------------------------------
 # 3. STREAMLIT UI — tiêu đề (compact, tự co chữ trên màn hình hẹp) +
-# nút hamburger để mở/đóng sidebar. Nút hamburger nằm ở MAIN AREA (không
-# nằm trong sidebar) nên luôn bấm được kể cả khi sidebar đang ẩn hoàn
-# toàn trên mobile — đây là cách duy nhất để mở lại sidebar trên điện
-# thoại một khi nó đã bị thu về 0px (xem CSS responsive bên dưới).
+# nút hamburger nhỏ ngay sau tiêu đề để mở/đóng sidebar. Nút hamburger
+# nằm ở MAIN AREA (không nằm trong sidebar) nên luôn bấm được kể cả khi
+# sidebar đang ẩn hoàn toàn trên mobile — đây là cách duy nhất để mở lại
+# sidebar trên điện thoại một khi nó đã bị thu về 0px (CSS responsive
+# bên dưới).
+#
+# Bọc trong container có `key` để có thể target riêng bằng CSS
+# `.st-key-app_header` — cần vì:
+#   1) Mặc định Streamlit sẽ tự XẾP DỌC 2 cột này trên màn hình hẹp
+#      (đó là lý do nút hamburger từng chiếm nguyên 1 dòng ngang trên
+#      iPhone) -> ép flex-direction: row để luôn nằm 1 hàng.
+#   2) Mặc định 2 cột bị align-items: stretch (kéo giãn bằng chiều cao
+#      nhau) khiến khối tiêu đề (2 dòng chữ, cao hơn nút) bị cắt mất
+#      phần trên -> đổi thành align-items: center để không bị bóp nữa.
 # ---------------------------------------------------------
-title_col, menu_col = st.columns([10, 1])
-with title_col:
-    st.markdown(
-        """
-        <div style="line-height:1.15; margin-bottom:0.4rem;">
-            <div style="font-size:clamp(1.05rem, 4vw, 1.8rem); font-weight:700;
-                        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-                Multi-Model AI Assistant
+st.markdown(
+    """
+    <style>
+    .st-key-app_header [data-testid="stHorizontalBlock"] {
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        gap: 0.4rem !important;
+    }
+    .st-key-app_header [data-testid="column"]:first-child {
+        flex: 1 1 auto !important;
+        width: auto !important;
+        min-width: 0 !important;
+    }
+    .st-key-app_header [data-testid="column"]:last-child {
+        flex: 0 0 42px !important;
+        width: 42px !important;
+        min-width: 0 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+with st.container(key="app_header"):
+    title_col, menu_col = st.columns([10, 1])
+    with title_col:
+        st.markdown(
+            """
+            <div style="line-height:1.2;">
+                <div style="font-size:clamp(1.05rem, 4vw, 1.8rem); font-weight:700;
+                            white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                    Multi-Model AI Assistant
+                </div>
+                <div style="font-size:0.85rem; opacity:0.65;
+                            white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                    Combines answers from several AI models into one cross-checked response.
+                </div>
             </div>
-            <div style="font-size:0.85rem; opacity:0.65;">
-                Combines answers from several AI models into one cross-checked response.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-with menu_col:
-    if st.button("", key="toggle_sidebar_main", icon=":material/menu:", help="Menu", use_container_width=True):
-        st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
-        st.rerun()
+            """,
+            unsafe_allow_html=True,
+        )
+    with menu_col:
+        if st.button("", key="toggle_sidebar_main", icon=":material/menu:", help="Menu", use_container_width=True):
+            st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
+            st.rerun()
 
-_desktop_width = "68px" if st.session_state.sidebar_collapsed else "300px"
+# Bề rộng sidebar khi mở rộng — thu nhỏ lại theo yêu cầu (trước là
+# 300px / 82vw, giờ gọn hơn).
+_desktop_width = "68px" if st.session_state.sidebar_collapsed else "260px"
 # Trên mobile: nếu gọn -> ẩn hẳn (0px, không còn dải icon nào che chatbox
 # nữa); nếu mở -> hiện như một lớp overlay (position:fixed) đè lên trên
 # nội dung chính thay vì đẩy nội dung sang một bên, giống ngăn kéo
@@ -410,9 +447,9 @@ else:
             top: 0 !important;
             left: 0 !important;
             height: 100vh !important;
-            min-width: 82vw !important;
-            max-width: 82vw !important;
-            width: 82vw !important;
+            min-width: 75vw !important;
+            max-width: 75vw !important;
+            width: 75vw !important;
             z-index: 999 !important;
             box-shadow: 2px 0 16px rgba(0, 0, 0, 0.3) !important;
         }
