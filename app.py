@@ -48,6 +48,20 @@ hide_streamlit_chrome = """
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     [data-testid="stAppDeployButton"] {visibility: hidden;}
+
+    /* GitHub Octocat icon (top-right) — links straight to your repo */
+    #GithubIcon {visibility: hidden;}
+
+    /* "Manage app" / "Hosted with Streamlit" badge (bottom-right on
+    Community Cloud) — also links back to the repo / your account.
+    Streamlit hashes these class names per build, so match by substring
+    (class*=) instead of an exact class, or a version bump silently
+    breaks this rule again. */
+    [class*="viewerBadge"] {display: none !important;}
+
+    /* Safety net: catch any other stray link to github.com Streamlit
+    might render (e.g. inside the toolbar on some versions). */
+    a[href*="github.com"] {display: none !important;}
     </style>
 """
 st.markdown(hide_streamlit_chrome, unsafe_allow_html=True)
