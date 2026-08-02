@@ -50,10 +50,7 @@ hide_streamlit_chrome = """
     .stAppViewerFooter {display: none;}
 
     /* Toolbar bên trong header — chứa menu 3 chấm, nút Deploy, icon
-    GitHub (Octocat), status widget "Running"... Ẩn đúng cụm này thay vì
-    ẩn cả <header> để KHÔNG đụng tới nút mở/đóng sidebar (nút đó là một
-    phần tử khác nằm cạnh stToolbar, không nằm bên trong nó), nên New
-    Chat / History vẫn đóng-mở lại bình thường sau khi bấm "<<". */
+    GitHub (Octocat), status widget "Running"... */
     [data-testid="stToolbar"] {visibility: hidden;}
     [data-testid="stStatusWidget"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
@@ -63,6 +60,25 @@ hide_streamlit_chrome = """
 
     /* Thu gọn khoảng trắng thừa phía trên */
     .block-container { padding-top: 2rem; }
+
+    /* Ép SIDEBAR LUÔN MỞ, không cho đóng nữa. Lý do: nút mở lại
+    ("<<" / ">>") có tên data-testid đổi khác nhau tuỳ phiên bản
+    Streamlit, dò không trúng là mất luôn đường vào New Chat/History
+    (như vừa gặp). Ép mở vĩnh viễn bằng CSS thì không còn phụ thuộc
+    tên nút đó nữa — chắc chắn 100% New Chat/History luôn hiện. */
+    [data-testid="stSidebar"] {
+        min-width: 300px !important;
+        max-width: 300px !important;
+        width: 300px !important;
+        transform: none !important;
+        visibility: visible !important;
+    }
+    /* Ẩn nút đóng/mở vì giờ bấm cũng không còn tác dụng nữa */
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="collapsedControl"],
+    [data-testid="stSidebarCollapsedControl"] {
+        display: none !important;
+    }
     </style>
 """
 st.markdown(hide_streamlit_chrome, unsafe_allow_html=True)
