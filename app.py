@@ -24,6 +24,24 @@ from openai import AsyncOpenAI
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
+hide_streamlit_style = """
+    <style>
+    /* Ẩn Menu 3 chấm và Header ở góc trên */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Ẩn Footer và Badge logo Streamlit ở góc dưới */
+    footer {visibility: hidden;}
+    .stAppViewerFooter {display: none;}
+    
+    /* Ẩn bớt khoảng trống phía trên sau khi ẩn Header */
+    .block-container {
+        padding-top: 2rem;
+    }
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 st.set_page_config(
     page_title="Multi-Model AI Assistant",
     layout="wide",
