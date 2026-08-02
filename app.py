@@ -27,7 +27,11 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 st.set_page_config(
     page_title="Multi-Model AI Assistant",
     layout="wide",
-    initial_sidebar_state="collapsed",  # start collapsed, like Claude's sidebar: just an icon until clicked
+    # NOTE: intentionally NOT setting initial_sidebar_state="collapsed".
+    # Its reopen affordance depends on Streamlit version / how the app is
+    # embedded (e.g. Streamlit Cloud iframes), and was unreliable in
+    # testing. Default "auto" always gives a visible, working sidebar
+    # toggle, at the cost of the sidebar being open on first load.
 )
 # CSS to hide Streamlit's default hamburger menu and "Deploy" button /
 # footer watermark. IMPORTANT: target these specific elements only —
@@ -35,25 +39,6 @@ st.set_page_config(
 # because the sidebar's re-open arrow (data-testid="stExpandSidebarButton")
 # lives inside that same toolbar. Hiding the whole toolbar hides that arrow
 # too, making a collapsed sidebar impossible to reopen.
-# =========================================================
-hide_streamlit_style = """
-    <style>
-    /* Ẩn Menu 3 chấm và Header ở góc trên */
-    #MainMenu {visibility: hidden;}
-    header {visibility: hidden;}
-    
-    /* Ẩn Footer và Badge logo Streamlit ở góc dưới */
-    footer {visibility: hidden;}
-    div[data-testid="stStatusWidget"] {visibility: hidden;}
-    
-    /* Thu gọn khoảng trắng thừa phía trên */
-    .block-container {
-        padding-top: 2rem;
-    }
-    </style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
-# =========================================================
 hide_streamlit_chrome = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -185,19 +170,31 @@ def read_attachments(files) -> tuple[str, list[str]]:
 # to classify every message — cheaper and predictable.
 IMAGE_KEYWORDS = [
     "vẽ ảnh", "vẽ hình", "vẽ giúp", "vẽ cho", "vẽ một",
-    "tạo ảnh", "tạo hình ảnh", "tạo hình",
+    "tạo ảnh", "tạo hình ảnh", "tạo hình", "hình ảnh của", "ảnh của",
     "generate image", "generate a picture", "generate picture",
     "draw a picture", "draw an image", "draw me",
     "create an image", "create a picture", "make an image", "make a picture",
+    "picture of", "image of", "photo of",
     "/image", "/img",
 ]
+
+# If the message *starts* with one of these verbs, treat it as an image
+# request even without a following keyword phrase — this is what catches
+# short commands like "Draw Leo Messi in Tokyo" or "Vẽ Messi ở Tokyo".
+# Trade-off: a message like "Draw conclusions from this data" would also be
+# (mis)classified as an image request. Let us know if that becomes an issue
+# and we can switch to an explicit toggle instead of keyword-guessing.
+IMAGE_LEADING_VERBS = ["draw", "paint", "sketch", "illustrate", "vẽ"]
 
 
 def is_image_request(text: str) -> bool:
     """True if the message looks like an image-generation request."""
     if not text:
         return False
-    lowered = text.lower()
+    lowered = text.lower().strip()
+    first_word = lowered.split(None, 1)[0].strip(",.:!?") if lowered else ""
+    if first_word in IMAGE_LEADING_VERBS:
+        return True
     return any(kw in lowered for kw in IMAGE_KEYWORDS)
 
 
