@@ -324,9 +324,6 @@ async def get_final_answer(leader_prompt: str) -> str:
 # ---------------------------------------------------------
 # 3. STREAMLIT UI
 # ---------------------------------------------------------
-st.title("Multi-Model AI Assistant")
-st.caption("Combines answers from several AI models into one cross-checked response.")
-
 # ---------------------------------------------------------
 # 3a. MULTI-CHAT SESSIONS (New Chat + Chat History, sidebar)
 # ---------------------------------------------------------
@@ -360,43 +357,105 @@ if st.session_state.current_id not in st.session_state.conversations:
 # cơ chế collapse/expand có sẵn của Streamlit nữa (tên nút đó đổi khác
 # nhau tuỳ phiên bản, dễ bị kẹt-đóng như đã gặp). Bề rộng sidebar được
 # set động qua CSS theo giá trị này, nên toggle luôn hoạt động chắc chắn.
+# Mặc định GỌN (chỉ icon), theo yêu cầu.
 if "sidebar_collapsed" not in st.session_state:
-    st.session_state.sidebar_collapsed = False
+    st.session_state.sidebar_collapsed = True
 
-_sidebar_width = "68px" if st.session_state.sidebar_collapsed else "300px"
+# ---------------------------------------------------------
+# 3. STREAMLIT UI — tiêu đề (compact, tự co chữ trên màn hình hẹp) +
+# nút hamburger để mở/đóng sidebar. Nút hamburger nằm ở MAIN AREA (không
+# nằm trong sidebar) nên luôn bấm được kể cả khi sidebar đang ẩn hoàn
+# toàn trên mobile — đây là cách duy nhất để mở lại sidebar trên điện
+# thoại một khi nó đã bị thu về 0px (xem CSS responsive bên dưới).
+# ---------------------------------------------------------
+title_col, menu_col = st.columns([10, 1])
+with title_col:
+    st.markdown(
+        """
+        <div style="line-height:1.15; margin-bottom:0.4rem;">
+            <div style="font-size:clamp(1.05rem, 4vw, 1.8rem); font-weight:700;
+                        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                Multi-Model AI Assistant
+            </div>
+            <div style="font-size:0.85rem; opacity:0.65;">
+                Combines answers from several AI models into one cross-checked response.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with menu_col:
+    if st.button("", key="toggle_sidebar_main", icon=":material/menu:", help="Menu", use_container_width=True):
+        st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
+        st.rerun()
+
+_desktop_width = "68px" if st.session_state.sidebar_collapsed else "300px"
+# Trên mobile: nếu gọn -> ẩn hẳn (0px, không còn dải icon nào che chatbox
+# nữa); nếu mở -> hiện như một lớp overlay (position:fixed) đè lên trên
+# nội dung chính thay vì đẩy nội dung sang một bên, giống ngăn kéo
+# (drawer) thường thấy trên app di động.
+if st.session_state.sidebar_collapsed:
+    _mobile_sidebar_css = """
+        [data-testid="stSidebar"] {
+            min-width: 0px !important;
+            max-width: 0px !important;
+            width: 0px !important;
+            overflow: hidden !important;
+        }
+    """
+else:
+    _mobile_sidebar_css = """
+        [data-testid="stSidebar"] {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            height: 100vh !important;
+            min-width: 82vw !important;
+            max-width: 82vw !important;
+            width: 82vw !important;
+            z-index: 999 !important;
+            box-shadow: 2px 0 16px rgba(0, 0, 0, 0.3) !important;
+        }
+    """
 st.markdown(f"""
     <style>
     [data-testid="stSidebar"] {{
-        min-width: {_sidebar_width} !important;
-        max-width: {_sidebar_width} !important;
-        width: {_sidebar_width} !important;
+        min-width: {_desktop_width} !important;
+        max-width: {_desktop_width} !important;
+        width: {_desktop_width} !important;
         transform: none !important;
         visibility: visible !important;
+    }}
+    @media (max-width: 640px) {{
+        {_mobile_sidebar_css}
     }}
     </style>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
     if st.session_state.sidebar_collapsed:
-        # ---------------- CHẾ ĐỘ GỌN: chỉ icon ----------------
-        if st.button("", key="expand_sidebar", help="Mở rộng", icon=":material/dock_to_right:", use_container_width=True):
+        # ---------------- CHẾ ĐỘ GỌN: chỉ icon (desktop) ----------------
+        # Trên mobile sidebar đang bị ẩn 0px nên các nút này không hiện
+        # ra được — người dùng mobile mở sidebar qua nút hamburger phía
+        # trên thay vì nút "»" này.
+        if st.button("", key="expand_sidebar", help="Expand", icon=":material/dock_to_right:", use_container_width=True):
             st.session_state.sidebar_collapsed = False
             st.rerun()
-        if st.button("", key="collapsed_new_chat", help="New Chat", icon=":material/edit_square:", use_container_width=True):
+        if st.button("", key="collapsed_new_chat", help="New chat", icon=":material/edit_square:", use_container_width=True):
             _new_conversation()
             st.rerun()
-        if st.button("", key="collapsed_history", help="Chat History", icon=":material/forum:", use_container_width=True):
+        if st.button("", key="collapsed_history", help="Chat history", icon=":material/forum:", use_container_width=True):
             # Icon "History" ở chế độ gọn không đủ chỗ liệt kê tên chat,
             # nên bấm vào sẽ mở rộng sidebar ra để xem danh sách đầy đủ.
             st.session_state.sidebar_collapsed = False
             st.rerun()
     else:
-        # ---------------- CHẾ ĐỘ ĐẦY ĐỦ (như hiện tại) ----------------
+        # ---------------- CHẾ ĐỘ ĐẦY ĐỦ ----------------
         head_col, collapse_col = st.columns([5, 1])
         with head_col:
             st.header("Chats")
         with collapse_col:
-            if st.button("", key="collapse_sidebar", help="Thu gọn", icon=":material/dock_to_left:"):
+            if st.button("", key="collapse_sidebar", help="Collapse", icon=":material/dock_to_left:"):
                 st.session_state.sidebar_collapsed = True
                 st.rerun()
         if st.button("New chat", key="new_chat_full", icon=":material/edit_square:", use_container_width=True):
