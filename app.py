@@ -209,6 +209,42 @@ async def run_ensemble(full_query: str):
     )
 
 
+def build_history_block(history: list, max_turns: int = 6, max_chars: int = 6000) -> str:
+    """Format the last `max_turns` completed turns of the CURRENT conversation
+    into a plain-text recap prepended to the next prompt.
+    Without this, fetch_gemini/fetch_groq are called with only `user_text` —
+    a single isolated sentence — every single time, so a follow-up like "Co
+    link youtube nao khong?" arrives with zero memory of the Milky Way
+    question just asked. This is not a bug in the API calls themselves, it's
+    that nothing in `full_query` ever carried prior turns.
+    Only the Leader's synthesized answer is included per turn (not all 3
+    individual model answers) to keep the recap compact and cheap. Image
+    turns are skipped (no useful text answer to recap). If the recap still
+    exceeds `max_chars`, it's trimmed from the start so the MOST RECENT turns
+    (usually most relevant to a follow-up) are kept, not the oldest."""
+    if not history:
+        return ""
+    lines = []
+    for turn in history[-max_turns:]:
+        if turn.get("type") == "image":
+            continue
+        lines.append(f"User: {turn['user']}")
+        lines.append(f"Assistant: {turn.get('synthesis', '')}")
+    if not lines:
+        return ""
+    recap = "\n".join(lines)
+    if len(recap) > max_chars:
+        recap = recap[-max_chars:]
+    return (
+        "[CONVERSATION SO FAR — for context only; the user cannot see this "
+        "block again, so don't quote it back verbatim]:\n"
+        f"{recap}\n\n"
+        "[NEW MESSAGE FROM THE USER — if it's a follow-up (e.g. \"any link "
+        "for that?\", \"explain more\"), resolve it using the conversation "
+        "above; otherwise treat it as a fresh question]:\n"
+    )
+
+
 def build_context_line() -> str:
     # None of these models know the real current date/time on their own — without
     # this, they'll guess based on training data (often wrong/"hallucinated").
@@ -739,7 +775,7 @@ if st.session_state.job is not None:
 # Chat input: Enter (or the built-in send arrow) submits; the "+" icon (via
 # accept_file) lets the user attach files, matching modern chat-app UIs.
 prompt = st.chat_input(
-    "Ask everything...",
+    "Ask fcb everything...",
     accept_file="multiple",
     file_type=["txt", "md", "csv", "json", "py", "log"],
     disabled=st.session_state.job is not None,
@@ -769,7 +805,8 @@ if prompt and st.session_state.job is None:
                 f"\n\n\U0001F4CE {', '.join(attachment_names)}" if attachment_names else ""
             )
             context_line = build_context_line()
-            full_query = context_line + user_text + attachment_block
+            history_block = build_history_block(current_conv["history"])
+            full_query = context_line + history_block + user_text + attachment_block
 
             st.session_state.job = _start_job(
                 run_ensemble(full_query),
