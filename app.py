@@ -57,6 +57,25 @@ hide_streamlit_chrome = """
     /* "Manage app" / "Hosted with Streamlit" badge (Community Cloud) */
     [class*="viewerBadge"] {display: none !important;}
 
+    /* Nút "<<" gốc của Streamlit để đóng/mở sidebar — nằm bên TRONG
+    sidebar, không nằm trong stToolbar nên chưa bị ẩn ở trên. Giờ dùng
+    nút "«"/"»" tự viết rồi nên ẩn hẳn cái gốc để khỏi có 2 nút chồng
+    nhau (cái gốc bấm không còn tác dụng gì vì width đã bị CSS ép). */
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="collapsedControl"],
+    [data-testid="stSidebarCollapsedControl"] {
+        display: none !important;
+    }
+
+    /* Bo góc + hiệu ứng hover nhẹ cho các nút trong sidebar, cho gọn
+    gàng/hiện đại hơn kiểu mặc định của Streamlit. */
+    [data-testid="stSidebar"] button {
+        border-radius: 8px !important;
+    }
+    [data-testid="stSidebar"] button:hover {
+        background-color: rgba(120, 120, 120, 0.12) !important;
+    }
+
     /* Thu gọn khoảng trắng thừa phía trên */
     .block-container { padding-top: 2rem; }
     </style>
@@ -360,13 +379,13 @@ st.markdown(f"""
 with st.sidebar:
     if st.session_state.sidebar_collapsed:
         # ---------------- CHẾ ĐỘ GỌN: chỉ icon ----------------
-        if st.button("»", key="expand_sidebar", help="Mở rộng", use_container_width=True):
+        if st.button("", key="expand_sidebar", help="Mở rộng", icon=":material/dock_to_right:", use_container_width=True):
             st.session_state.sidebar_collapsed = False
             st.rerun()
-        if st.button("➕", key="collapsed_new_chat", help="New Chat", use_container_width=True):
+        if st.button("", key="collapsed_new_chat", help="New Chat", icon=":material/edit_square:", use_container_width=True):
             _new_conversation()
             st.rerun()
-        if st.button("💬", key="collapsed_history", help="Chat History", use_container_width=True):
+        if st.button("", key="collapsed_history", help="Chat History", icon=":material/forum:", use_container_width=True):
             # Icon "History" ở chế độ gọn không đủ chỗ liệt kê tên chat,
             # nên bấm vào sẽ mở rộng sidebar ra để xem danh sách đầy đủ.
             st.session_state.sidebar_collapsed = False
@@ -375,25 +394,23 @@ with st.sidebar:
         # ---------------- CHẾ ĐỘ ĐẦY ĐỦ (như hiện tại) ----------------
         head_col, collapse_col = st.columns([5, 1])
         with head_col:
-            st.header("💬 Chats")
+            st.header("Chats")
         with collapse_col:
-            if st.button("«", key="collapse_sidebar", help="Thu gọn"):
+            if st.button("", key="collapse_sidebar", help="Thu gọn", icon=":material/dock_to_left:"):
                 st.session_state.sidebar_collapsed = True
                 st.rerun()
-        if st.button("➕ New Chat", use_container_width=True):
+        if st.button("New chat", key="new_chat_full", icon=":material/edit_square:", use_container_width=True):
             _new_conversation()
             st.rerun()
         st.divider()
-        st.caption("History")
+        st.caption("Recent")
         # Newest conversation on top
         for conv_id, conv in reversed(list(st.session_state.conversations.items())):
             is_active = conv_id == st.session_state.current_id
-            label = ("🟢 " if is_active else "⚪ ") + conv["title"]
-            if st.button(label, key=f"conv_{conv_id}", use_container_width=True):
+            icon = ":material/forum:" if is_active else ":material/chat_bubble:"
+            if st.button(conv["title"], key=f"conv_{conv_id}", icon=icon, use_container_width=True):
                 st.session_state.current_id = conv_id
                 st.rerun()
-        st.divider()
-        st.caption("🎨 Type \"draw ...\" / \"generate image ...\" to create an image (Pollinations.ai).")
 
 current_conv = st.session_state.conversations[st.session_state.current_id]
 
@@ -566,7 +583,7 @@ if st.session_state.job is not None:
 # Chat input: Enter (or the built-in send arrow) submits; the "+" icon (via
 # accept_file) lets the user attach files, matching modern chat-app UIs.
 prompt = st.chat_input(
-    "Ask fcb anything... (or type 'draw ...' to generate an image)",
+    "Ask fcb everything...",
     accept_file="multiple",
     file_type=["txt", "md", "csv", "json", "py", "log"],
     disabled=st.session_state.job is not None,
