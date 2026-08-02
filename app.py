@@ -1,5 +1,7 @@
 import os
+import uuid
 import asyncio
+import urllib.parse
 from datetime import datetime, timezone
 import streamlit as st
 from google import genai
@@ -146,6 +148,64 @@ def read_attachments(files) -> tuple[str, list[str]]:
     return block, names
 
 
+# ---------------------------------------------------------
+# 2b. IMAGE GENERATION (Pollinations.ai — free, no API key needed)
+# ---------------------------------------------------------
+# Keywords (Vietnamese + English) used to detect "the user wants an image,
+# not a text answer". Keep this simple/explicit rather than asking a model
+# to classify every message — cheaper and predictable.
+IMAGE_KEYWORDS = [
+    "vẽ ảnh", "vẽ hình", "vẽ giúp", "vẽ cho", "vẽ một",
+    "tạo ảnh", "tạo hình ảnh", "tạo hình",
+    "generate image", "generate a picture", "generate picture",
+    "draw a picture", "draw an image", "draw me",
+    "create an image", "create a picture", "make an image", "make a picture",
+    "/image", "/img",
+]
+
+
+def is_image_request(text: str) -> bool:
+    """True if the message looks like an image-generation request."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(kw in lowered for kw in IMAGE_KEYWORDS)
+
+
+async def translate_prompt_to_english(raw_text: str) -> str:
+    """Turn the user's (possibly Vietnamese) request into a short English
+    image-generation prompt, using Gemini. Falls back to the raw text if
+    Gemini is unavailable (Pollinations still works with non-English text,
+    just less reliably)."""
+    instruction = (
+        "You are a prompt engineer for a text-to-image model. Read the "
+        "following user request (it may be in Vietnamese or English) and "
+        "write ONE short, vivid English image-generation prompt describing "
+        "the scene it asks for. Reply with ONLY the English prompt itself — "
+        "no quotes, no explanation, no leading phrase like 'Sure' or 'Here'.\n\n"
+        f"User request: {raw_text}"
+    )
+    result = await fetch_gemini(instruction)
+    if is_error_text(result):
+        return raw_text.strip()
+    return result.strip().strip('"').strip("'")
+
+
+def build_pollinations_url(prompt_en: str, width: int = 1024, height: int = 1024) -> str:
+    """Build a direct image URL from Pollinations.ai's image endpoint.
+    NOTE: the working endpoint is https://image.pollinations.ai/prompt/... —
+    the bare 'pollinations.ai/prompt/...' form does not serve the image
+    directly, so we use the correct 'image.' subdomain here."""
+    encoded = urllib.parse.quote(prompt_en)
+    # Random seed so re-running the same prompt doesn't just return a cached
+    # identical image.
+    seed = int(datetime.now().timestamp())
+    return (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?width={width}&height={height}&nologo=true&seed={seed}"
+    )
+
+
 def render_model_comparison(per_model: list[tuple[str, str]]):
     with st.expander(f"Compare {len(per_model)} individual model responses"):
         cols = st.columns(len(per_model))
@@ -194,21 +254,69 @@ async def get_final_answer(leader_prompt: str) -> str:
 st.title("Multi-Model AI Assistant")
 st.caption("Combines answers from several AI models into one cross-checked response.")
 
-if "history" not in st.session_state:
-    st.session_state.history = []  # list of {"user": str, "per_model": [...], "synthesis": str}
+# ---------------------------------------------------------
+# 3a. MULTI-CHAT SESSIONS (New Chat + Chat History, sidebar)
+# ---------------------------------------------------------
+# Kept in st.session_state, so it lives for the browser tab/session only
+# (resets on server restart) — same trade-off as the original single
+# `history` list, just split into multiple named conversations.
 
-# Render past turns
-for turn in st.session_state.history:
+def _new_conversation() -> str:
+    conv_id = str(uuid.uuid4())
+    st.session_state.conversations[conv_id] = {"title": "Đoạn chat mới", "history": []}
+    st.session_state.current_id = conv_id
+    return conv_id
+
+
+def _maybe_set_title(conv: dict, user_text: str):
+    """First message in a conversation becomes its title in the sidebar."""
+    if conv["title"] == "Đoạn chat mới" and user_text:
+        conv["title"] = (user_text[:40] + "…") if len(user_text) > 40 else user_text
+
+
+if "conversations" not in st.session_state:
+    st.session_state.conversations = {}
+if "current_id" not in st.session_state:
+    st.session_state.current_id = None
+if not st.session_state.conversations:
+    _new_conversation()
+if st.session_state.current_id not in st.session_state.conversations:
+    st.session_state.current_id = next(iter(st.session_state.conversations))
+
+with st.sidebar:
+    st.header("💬 Chats")
+    if st.button("➕ New Chat", use_container_width=True):
+        _new_conversation()
+        st.rerun()
+    st.divider()
+    st.caption("Lịch sử")
+    # Newest conversation on top
+    for conv_id, conv in reversed(list(st.session_state.conversations.items())):
+        is_active = conv_id == st.session_state.current_id
+        label = ("🟢 " if is_active else "⚪ ") + conv["title"]
+        if st.button(label, key=f"conv_{conv_id}", use_container_width=True):
+            st.session_state.current_id = conv_id
+            st.rerun()
+    st.divider()
+    st.caption("🎨 Gõ \"vẽ ảnh ...\" / \"tạo ảnh ...\" / \"generate image ...\" để tạo ảnh (Pollinations.ai).")
+
+current_conv = st.session_state.conversations[st.session_state.current_id]
+
+# Render past turns of the active conversation
+for turn in current_conv["history"]:
     with st.chat_message("user"):
         st.write(turn["user"])
     with st.chat_message("assistant"):
-        render_model_comparison(turn["per_model"])
-        st.markdown(turn["synthesis"])
+        if turn.get("type") == "image":
+            st.image(turn["image_url"], caption=f"Prompt: {turn['image_prompt_en']}")
+        else:
+            render_model_comparison(turn["per_model"])
+            st.markdown(turn["synthesis"])
 
 # Chat input: Enter (or the built-in send arrow) submits; the "+" icon (via
 # accept_file) lets the user attach files, matching modern chat-app UIs.
 prompt = st.chat_input(
-    "Ask fcb anything...",
+    "Ask fcb anything... (hoặc gõ 'vẽ ảnh ...' để tạo ảnh)",
     accept_file="multiple",
     file_type=["txt", "md", "csv", "json", "py", "log"],
 )
@@ -221,36 +329,59 @@ if prompt:
         user_text = "Please analyze the attached file(s)."
 
     if user_text or files:
-        attachment_block, attachment_names = read_attachments(files)
-        display_user_text = user_text + (
-            f"\n\n\U0001F4CE {', '.join(attachment_names)}" if attachment_names else ""
-        )
+        # ---------------- IMAGE GENERATION BRANCH ----------------
+        if is_image_request(user_text):
+            with st.chat_message("user"):
+                st.write(user_text)
 
-        context_line = build_context_line()
-        full_query = context_line + user_text + attachment_block
+            with st.chat_message("assistant"):
+                with st.spinner("Đang dịch prompt sang tiếng Anh..."):
+                    prompt_en = asyncio.run(translate_prompt_to_english(user_text))
+                img_url = build_pollinations_url(prompt_en)
+                st.image(img_url, caption=f"Prompt: {prompt_en}")
 
-        with st.chat_message("user"):
-            st.write(display_user_text)
+            _maybe_set_title(current_conv, user_text)
+            current_conv["history"].append({
+                "type": "image",
+                "user": user_text,
+                "image_prompt_en": prompt_en,
+                "image_url": img_url,
+            })
 
-        with st.chat_message("assistant"):
-            with st.spinner("Querying 3 AI models in parallel..."):
-                res_gemini, res_qwen, res_gptoss = asyncio.run(run_ensemble(full_query))
+        # ---------------- NORMAL TEXT / ENSEMBLE BRANCH ----------------
+        else:
+            attachment_block, attachment_names = read_attachments(files)
+            display_user_text = user_text + (
+                f"\n\n\U0001F4CE {', '.join(attachment_names)}" if attachment_names else ""
+            )
 
-            per_model = [
-                (MODEL_GEMINI_LABEL, res_gemini),
-                (MODEL_QWEN_LABEL, res_qwen),
-                (MODEL_GPTOSS_LABEL, res_gptoss),
-            ]
-            render_model_comparison(per_model)
+            context_line = build_context_line()
+            full_query = context_line + user_text + attachment_block
 
-            leader_prompt = build_leader_prompt(context_line, user_text, per_model)
-            with st.spinner("Synthesizing final answer..."):
-                final_summary = asyncio.run(get_final_answer(leader_prompt))
+            with st.chat_message("user"):
+                st.write(display_user_text)
 
-            st.markdown(final_summary)
+            with st.chat_message("assistant"):
+                with st.spinner("Querying 3 AI models in parallel..."):
+                    res_gemini, res_qwen, res_gptoss = asyncio.run(run_ensemble(full_query))
 
-        st.session_state.history.append({
-            "user": display_user_text,
-            "per_model": per_model,
-            "synthesis": final_summary,
-        })
+                per_model = [
+                    (MODEL_GEMINI_LABEL, res_gemini),
+                    (MODEL_QWEN_LABEL, res_qwen),
+                    (MODEL_GPTOSS_LABEL, res_gptoss),
+                ]
+                render_model_comparison(per_model)
+
+                leader_prompt = build_leader_prompt(context_line, user_text, per_model)
+                with st.spinner("Synthesizing final answer..."):
+                    final_summary = asyncio.run(get_final_answer(leader_prompt))
+
+                st.markdown(final_summary)
+
+            _maybe_set_title(current_conv, user_text)
+            current_conv["history"].append({
+                "type": "text",
+                "user": display_user_text,
+                "per_model": per_model,
+                "synthesis": final_summary,
+            })
