@@ -386,6 +386,17 @@ st.markdown(
         flex-wrap: nowrap !important;
         align-items: center !important;
         gap: 0.4rem !important;
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    .st-key-app_header [data-testid="column"] {
+        /* Streamlit tự thêm padding 2 bên cho mỗi cột (gutter) — trên
+        màn hình hẹp cộng dồn phần padding này làm cả hàng rộng hơn
+        100% viewport một chút, đẩy nút hamburger lòi ra ngoài mép phải,
+        chỉ thấy được nửa nút. Bỏ hẳn padding và tính width theo
+        border-box để hàng luôn vừa đúng 100% bề ngang màn hình. */
+        padding: 0 !important;
+        box-sizing: border-box !important;
     }
     .st-key-app_header [data-testid="column"]:first-child {
         flex: 1 1 auto !important;
@@ -393,8 +404,8 @@ st.markdown(
         min-width: 0 !important;
     }
     .st-key-app_header [data-testid="column"]:last-child {
-        flex: 0 0 42px !important;
-        width: 42px !important;
+        flex: 0 0 40px !important;
+        width: 40px !important;
         min-width: 0 !important;
     }
     </style>
@@ -413,7 +424,7 @@ with st.container(key="app_header"):
                 </div>
                 <div style="font-size:0.85rem; opacity:0.65;
                             white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-                    Combines answers from 3 AI models.
+                    Combines answers from several AI models into one cross-checked response.
                 </div>
             </div>
             """,
@@ -424,9 +435,8 @@ with st.container(key="app_header"):
             st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
             st.rerun()
 
-# Bề rộng sidebar khi mở rộng — thu nhỏ lại theo yêu cầu (trước là
-# 300px / 82vw, giờ gọn hơn).
-_desktop_width = "68px" if st.session_state.sidebar_collapsed else "260px"
+# Bề rộng sidebar khi mở rộng — thu nhỏ lại theo yêu cầu.
+_desktop_width = "68px" if st.session_state.sidebar_collapsed else "230px"
 # Trên mobile: nếu gọn -> ẩn hẳn (0px, không còn dải icon nào che chatbox
 # nữa); nếu mở -> hiện như một lớp overlay (position:fixed) đè lên trên
 # nội dung chính thay vì đẩy nội dung sang một bên, giống ngăn kéo
@@ -447,9 +457,9 @@ else:
             top: 0 !important;
             left: 0 !important;
             height: 100vh !important;
-            min-width: 75vw !important;
-            max-width: 75vw !important;
-            width: 75vw !important;
+            min-width: 68vw !important;
+            max-width: 68vw !important;
+            width: 68vw !important;
             z-index: 999 !important;
             box-shadow: 2px 0 16px rgba(0, 0, 0, 0.3) !important;
         }
