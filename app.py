@@ -85,6 +85,24 @@ hide_streamlit_chrome = """
     [data-testid="stStatusWidget"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
 
+    /* FIX: thanh <header> gốc của Streamlit (chứa các mục ở trên) trước
+    giờ chỉ bị ẩn TỪNG PHẦN bên trong (visibility:hidden cho từng icon),
+    nhưng bản thân cái <header> bao ngoài vẫn còn nguyên đó — trong suốt,
+    nhưng vẫn chiếm đúng dải trên cùng màn hình với z-index rất cao. Vô
+    hại khi nút hamburger còn nằm trong luồng bố cục bình thường (bên
+    dưới dải này), nhưng từ khi đổi nút hamburger sang position:fixed
+    (đặt ở top: 0.85rem — nằm ngay trong dải header gốc), header trong
+    suốt đó đè lên trên và chặn mất click/hiển thị của nút. Ẩn hẳn luôn
+    cả khối header gốc (không chỉ từng phần bên trong) để giải phóng
+    hoàn toàn dải trên cùng cho nút hamburger tự vẽ của mình.
+    height: 0 thay vì display:none để tránh Streamlit tính lại layout
+    bị giật/nhảy khi header biến mất đột ngột. */
+    header[data-testid="stHeader"] {
+        height: 0 !important;
+        min-height: 0 !important;
+        visibility: hidden !important;
+    }
+
     /* "Manage app" / "Hosted with Streamlit" badge (Community Cloud) */
     [class*="viewerBadge"] {display: none !important;}
 
@@ -477,7 +495,7 @@ st.markdown(
         position: fixed !important;
         top: 0.85rem !important;
         right: 0.9rem !important;
-        z-index: 1001 !important;   /* cao hơn overlay sidebar mobile (999) để luôn bấm được */
+        z-index: 999999 !important;   /* cực cao để không lớp nào (kể cả header gốc) đè lên được nữa */
         width: 40px !important;
     }
     .st-key-hamburger_btn button {
