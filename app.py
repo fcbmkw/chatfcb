@@ -47,21 +47,27 @@ hide_streamlit_chrome = """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    [data-testid="stAppDeployButton"] {visibility: hidden;}
+    .stAppViewerFooter {display: none;}
 
-    /* GitHub Octocat icon (top-right) — links straight to your repo */
-    #GithubIcon {visibility: hidden;}
+    /* Ẩn cả header — icon GitHub (Octocat), nút Deploy, status widget...
+    đều nằm bên trong thẻ <header> này, nên target riêng #GithubIcon /
+    [data-testid="stAppDeployButton"] không đủ, phải ẩn cả khối cha. */
+    header {visibility: hidden;}
 
-    /* "Manage app" / "Hosted with Streamlit" badge (bottom-right on
-    Community Cloud) — also links back to the repo / your account.
-    Streamlit hashes these class names per build, so match by substring
-    (class*=) instead of an exact class, or a version bump silently
-    breaks this rule again. */
+    /* Nhưng nút mở/đóng sidebar (New Chat + History) cũng nằm trong
+    header đó -> phải ép hiện lại riêng nó, nếu không sẽ mất luôn.
+    Liệt kê vài testid vì tên có thể khác nhau tùy phiên bản Streamlit. */
+    [data-testid="collapsedControl"],
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapsedControl"] {
+        visibility: visible !important;
+    }
+
+    /* "Manage app" / "Hosted with Streamlit" badge (Community Cloud) */
     [class*="viewerBadge"] {display: none !important;}
 
-    /* Safety net: catch any other stray link to github.com Streamlit
-    might render (e.g. inside the toolbar on some versions). */
-    a[href*="github.com"] {display: none !important;}
+    /* Thu gọn khoảng trắng thừa phía trên sau khi ẩn header */
+    .block-container { padding-top: 2rem; }
     </style>
 """
 st.markdown(hide_streamlit_chrome, unsafe_allow_html=True)
