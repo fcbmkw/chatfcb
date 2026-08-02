@@ -367,10 +367,10 @@ def build_pollinations_url(prompt_en: str, width: int = 1024, height: int = 1024
     )
 
 
-def render_model_comparison(per_model: list[tuple[str, str]]):
+def render_model_comparison(per_model: list[tuple[str, str]], key: str):
     if not per_model:
         return
-    with st.container(key="compare_wrap"):
+    with st.container(key=f"compare_wrap_{key}"):
         with st.expander(f"🔍 **Compare {len(per_model)} individual model responses** — click to see what each model said"):
             cols = st.columns(len(per_model))
             for col, (name, text) in zip(cols, per_model):
@@ -765,14 +765,14 @@ if st.session_state.job is not None and st.session_state.job["done"]:
     _finalize_job(st.session_state.job)
 
 # Render past turns of the active conversation
-for turn in current_conv["history"]:
+for _turn_idx, turn in enumerate(current_conv["history"]):
     with st.chat_message("user"):
         st.write(turn["user"])
     with st.chat_message("assistant"):
         if turn.get("type") == "image":
             st.image(turn["image_url"], caption=f"Prompt: {turn['image_prompt_en']}")
         else:
-            render_model_comparison(turn["per_model"])
+            render_model_comparison(turn["per_model"], key=f"{st.session_state.current_id}_{_turn_idx}")
             st.markdown(turn["synthesis"])
 
 # Render the in-flight turn (if any) with its live Stop button
