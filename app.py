@@ -49,24 +49,19 @@ hide_streamlit_chrome = """
     footer {visibility: hidden;}
     .stAppViewerFooter {display: none;}
 
-    /* Ẩn cả header — icon GitHub (Octocat), nút Deploy, status widget...
-    đều nằm bên trong thẻ <header> này, nên target riêng #GithubIcon /
-    [data-testid="stAppDeployButton"] không đủ, phải ẩn cả khối cha. */
-    header {visibility: hidden;}
-
-    /* Nhưng nút mở/đóng sidebar (New Chat + History) cũng nằm trong
-    header đó -> phải ép hiện lại riêng nó, nếu không sẽ mất luôn.
-    Liệt kê vài testid vì tên có thể khác nhau tùy phiên bản Streamlit. */
-    [data-testid="collapsedControl"],
-    [data-testid="stSidebarCollapseButton"],
-    [data-testid="stSidebarCollapsedControl"] {
-        visibility: visible !important;
-    }
+    /* Toolbar bên trong header — chứa menu 3 chấm, nút Deploy, icon
+    GitHub (Octocat), status widget "Running"... Ẩn đúng cụm này thay vì
+    ẩn cả <header> để KHÔNG đụng tới nút mở/đóng sidebar (nút đó là một
+    phần tử khác nằm cạnh stToolbar, không nằm bên trong nó), nên New
+    Chat / History vẫn đóng-mở lại bình thường sau khi bấm "<<". */
+    [data-testid="stToolbar"] {visibility: hidden;}
+    [data-testid="stStatusWidget"] {visibility: hidden;}
+    [data-testid="stDecoration"] {visibility: hidden;}
 
     /* "Manage app" / "Hosted with Streamlit" badge (Community Cloud) */
     [class*="viewerBadge"] {display: none !important;}
 
-    /* Thu gọn khoảng trắng thừa phía trên sau khi ẩn header */
+    /* Thu gọn khoảng trắng thừa phía trên */
     .block-container { padding-top: 2rem; }
     </style>
 """
