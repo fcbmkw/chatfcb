@@ -451,86 +451,63 @@ if "sidebar_collapsed" not in st.session_state:
 
 # ---------------------------------------------------------
 # 3. STREAMLIT UI — tiêu đề (compact, tự co chữ trên màn hình hẹp) +
-# nút hamburger nhỏ ngay sau tiêu đề để mở/đóng sidebar. Nút hamburger
-# nằm ở MAIN AREA (không nằm trong sidebar) nên luôn bấm được kể cả khi
-# sidebar đang ẩn hoàn toàn trên mobile — đây là cách duy nhất để mở lại
-# sidebar trên điện thoại một khi nó đã bị thu về 0px (CSS responsive
-# bên dưới).
+# nút hamburger để mở/đóng sidebar.
 #
-# Bọc trong container có `key` để có thể target riêng bằng CSS
-# `.st-key-app_header` — cần vì:
-#   1) Mặc định Streamlit sẽ tự XẾP DỌC 2 cột này trên màn hình hẹp
-#      (đó là lý do nút hamburger từng chiếm nguyên 1 dòng ngang trên
-#      iPhone) -> ép flex-direction: row để luôn nằm 1 hàng.
-#   2) Mặc định 2 cột bị align-items: stretch (kéo giãn bằng chiều cao
-#      nhau) khiến khối tiêu đề (2 dòng chữ, cao hơn nút) bị cắt mất
-#      phần trên -> đổi thành align-items: center để không bị bóp nữa.
+# LƯU Ý: bản trước dùng st.columns([10, 1]) để đặt tiêu đề + nút hamburger
+# trên cùng 1 hàng, rồi cố ép chiều rộng bằng CSS (flex-basis/padding/margin
+# của [data-testid="column"]/[data-testid="stHorizontalBlock"]). Cách đó
+# vẫn bị tràn/cắt nút trên màn hình hẹp (báo lại vẫn thấy nút bị che hơn
+# 1 nửa) vì độ rộng thật của hàng phụ thuộc vào nhiều lớp CSS mặc định
+# khác của Streamlit (min-width của block-container, gap giữa cột, v.v.)
+# mà mỗi bản Streamlit có thể tính khác nhau — rất dễ vỡ lại bất cứ lúc
+# nào Streamlit đổi cấu trúc DOM.
+#
+# Đổi sang cách chắc chắn hơn: nút hamburger KHÔNG còn nằm trong cột nào
+# cả, mà dùng `position: fixed` để tự neo cứng vào góc trên-phải màn
+# hình, hoàn toàn tách khỏi mọi phép tính chiều rộng cột/hàng ở trên. Vì
+# vậy dù hàng chứa tiêu đề có tràn/co giãn thế nào, nút vẫn luôn nằm
+# đúng 1 vị trí cố định so với viewport, không bao giờ bị đẩy ra ngoài
+# mép màn hình nữa. Tiêu đề chỉ cần chừa khoảng trống bên phải (padding-
+# right) để chữ không bị nút đè lên.
 # ---------------------------------------------------------
 st.markdown(
     """
     <style>
-    .st-key-app_header [data-testid="stHorizontalBlock"] {
-        flex-direction: row !important;
-        flex-wrap: nowrap !important;
-        align-items: center !important;
-        gap: 0.4rem !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        /* FIX #2: Streamlit tạo gutter giữa các cột bằng cách cho HÀNG
-        (stHorizontalBlock) margin âm 2 bên rồi bù lại bằng padding dương
-        trên mỗi CỘT — 2 việc phải đi cùng nhau. Đoạn code cũ chỉ xoá
-        padding của cột (bên dưới) mà quên xoá margin âm của hàng, nên
-        hàng vẫn bị "kéo" rộng hơn container cha đúng bằng phần margin âm
-        đó, đẩy nút hamburger lòi ra ngoài mép phải màn hình (chỉ thấy
-        được hơn 1 nửa). Set lại margin: 0 để hàng khớp đúng 100% chiều
-        ngang của .st-key-app_header, không rộng hơn. */
-        margin: 0 !important;
-    }
-    .st-key-app_header [data-testid="column"] {
-        /* Streamlit tự thêm padding 2 bên cho mỗi cột (gutter) — trên
-        màn hình hẹp cộng dồn phần padding này làm cả hàng rộng hơn
-        100% viewport một chút, đẩy nút hamburger lòi ra ngoài mép phải,
-        chỉ thấy được nửa nút. Bỏ hẳn padding và tính width theo
-        border-box để hàng luôn vừa đúng 100% bề ngang màn hình. */
-        padding: 0 !important;
-        box-sizing: border-box !important;
-    }
-    .st-key-app_header [data-testid="column"]:first-child {
-        flex: 1 1 auto !important;
-        width: auto !important;
-        min-width: 0 !important;
-    }
-    .st-key-app_header [data-testid="column"]:last-child {
-        flex: 0 0 40px !important;
+    .st-key-hamburger_btn {
+        position: fixed !important;
+        top: 0.85rem !important;
+        right: 0.9rem !important;
+        z-index: 1001 !important;   /* cao hơn overlay sidebar mobile (999) để luôn bấm được */
         width: 40px !important;
-        min-width: 0 !important;
+    }
+    .st-key-hamburger_btn button {
+        width: 40px !important;
+        height: 40px !important;
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
-with st.container(key="app_header"):
-    title_col, menu_col = st.columns([10, 1])
-    with title_col:
-        st.markdown(
-            """
-            <div style="line-height:1.2;">
-                <div style="font-size:clamp(1.05rem, 4vw, 1.8rem); font-weight:700;
-                            white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-                    Multi-Model AI Assistant
-                </div>
-                <div style="font-size:0.85rem; opacity:0.65;
-                            white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-                    Combines answers from several AI models.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with menu_col:
-        if st.button("", key="toggle_sidebar_main", icon=":material/menu:", help="Menu", use_container_width=True):
-            st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
-            st.rerun()
+with st.container(key="hamburger_btn"):
+    if st.button("", key="toggle_sidebar_main", icon=":material/menu:", help="Menu", use_container_width=True):
+        st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
+        st.rerun()
+
+st.markdown(
+    """
+    <div style="line-height:1.2; padding-right:52px;">
+        <div style="font-size:clamp(1.05rem, 4vw, 1.8rem); font-weight:700;
+                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+            Multi-Model AI Assistant
+        </div>
+        <div style="font-size:0.85rem; opacity:0.65;
+                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+            Combines answers from several AI models.
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # Bề rộng sidebar khi mở rộng — thu nhỏ lại theo yêu cầu.
 _desktop_width = "68px" if st.session_state.sidebar_collapsed else "230px"
