@@ -383,18 +383,15 @@ Use the [SYSTEM CONTEXT] above as ground truth — if an answer's date/time matc
 
 {answers_block}
 
-Your task:
-1. Compare the valid answers: note what they agree on and any key disagreements/differences.
-2. Assess the accuracy/reliability of any differences.
-3. Synthesize one FINAL answer that is complete, accurate, and easy to understand for the user.
+Silently reconcile the valid answers — resolve any disagreements in favor of whichever is more accurate/reliable — and reply with ONLY the final answer: complete, accurate, and easy to understand for the user. Do NOT include a comparison/analysis section, do NOT mention "Model A said X, Model B said Y", do NOT explain your reconciliation process. Go straight to the answer itself, as if you were answering the question yourself.
 """
 
 
 async def get_final_answer(leader_prompt: str) -> str:
-    final_summary = await fetch_gemini(leader_prompt)
+    final_summary = await fetch_groq(leader_prompt, "openai/gpt-oss-120b")
     if is_error_text(final_summary):
-        # Fallback leader if Gemini itself is down, so the user isn't left empty-handed.
-        final_summary = await fetch_groq(leader_prompt, "openai/gpt-oss-120b")
+        # Fallback leader if Groq itself is down, so the user isn't left empty-handed.
+        final_summary = await fetch_gemini(leader_prompt)
     return final_summary
 
 
