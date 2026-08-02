@@ -24,24 +24,9 @@ from openai import AsyncOpenAI
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-hide_streamlit_style = """
-    <style>
-    /* Ẩn Menu 3 chấm và Header ở góc trên */
-    #MainMenu {visibility: hidden;}
-    header {visibility: hidden;}
-    
-    /* Ẩn Footer và Badge logo Streamlit ở góc dưới */
-    footer {visibility: hidden;}
-    .stAppViewerFooter {display: none;}
-    
-    /* Ẩn bớt khoảng trống phía trên sau khi ẩn Header */
-    .block-container {
-        padding-top: 2rem;
-    }
-    </style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
-
+# st.set_page_config() PHẢI là lệnh Streamlit đầu tiên trong script (trước
+# mọi st.markdown/st.write/...), nếu không Streamlit sẽ báo lỗi
+# StreamlitAPIException ngay khi chạy.
 st.set_page_config(
     page_title="Multi-Model AI Assistant",
     layout="wide",
@@ -51,6 +36,7 @@ st.set_page_config(
     # testing. Default "auto" always gives a visible, working sidebar
     # toggle, at the cost of the sidebar being open on first load.
 )
+
 # CSS to hide Streamlit's default hamburger menu and "Deploy" button /
 # footer watermark. IMPORTANT: target these specific elements only —
 # do NOT hide the whole `header` or `[data-testid="stToolbar"]` container,
@@ -65,6 +51,7 @@ hide_streamlit_chrome = """
     </style>
 """
 st.markdown(hide_streamlit_chrome, unsafe_allow_html=True)
+
 if not GEMINI_API_KEY or not GROQ_API_KEY:
     st.error(
         "Missing API key. Please set the GEMINI_API_KEY and GROQ_API_KEY "
