@@ -5,6 +5,7 @@ import threading
 import urllib.parse
 from datetime import datetime, timezone
 import streamlit as st
+import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors as genai_errors
 from openai import AsyncOpenAI
@@ -35,6 +36,36 @@ st.set_page_config(
     # embedded (e.g. Streamlit Cloud iframes), and was unreliable in
     # testing. Default "auto" always gives a visible, working sidebar
     # toggle, at the cost of the sidebar being open on first load.
+)
+
+# --- FIX #1: viewport meta tag -----------------------------------------
+# st.markdown(..., unsafe_allow_html=True) chỉ inject HTML vào giữa <body>,
+# KHÔNG BAO GIỜ chạm được vào <head> — vì vậy nếu chỉ viết
+# st.markdown('<meta name="viewport" ...>') thì trình duyệt không đọc thẻ
+# đó (nó không nằm trong <head>). Safari trên iPhone, thiếu đúng
+# <meta name="viewport"> trong <head>, sẽ tự coi trang là rộng ~980px
+# (layout "desktop giả lập") rồi thu nhỏ lại vừa màn hình — nên
+# `window.innerWidth`/`@media (max-width: 640px)` không bao giờ true dù
+# màn hình vật lý chỉ ~390px. Đây là lý do sidebar đổi size trên máy tính
+# (đã có viewport mặc định đúng của trình duyệt desktop) nhưng không đổi
+# trên iPhone.
+# Cách duy nhất để chèn được vào đúng <head> là qua components.html: nó
+# render trong 1 iframe cùng-origin (srcdoc), và script bên trong dùng
+# `window.parent.document` để thao tác lên <head> của trang cha (trang
+# Streamlit thật), rồi tự huỷ iframe (height=0) sau khi chạy xong.
+components.html(
+    """
+    <script>
+        var head = window.parent.document.getElementsByTagName('head')[0];
+        if (!window.parent.document.querySelector('meta[name="viewport"]')) {
+            var meta = document.createElement('meta');
+            meta.name = "viewport";
+            meta.content = "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no";
+            head.appendChild(meta);
+        }
+    </script>
+    """,
+    height=0,
 )
 
 # CSS ẩn menu 3 chấm / nút Deploy / icon GitHub / badge "Manage app"...
@@ -78,6 +109,16 @@ hide_streamlit_chrome = """
 
     /* Thu gọn khoảng trắng thừa phía trên */
     .block-container { padding-top: 2rem; }
+
+    /* FIX (bảo hiểm chung): khoá cứng chiều ngang = đúng viewport trên
+    mọi kích thước màn hình. Nếu có phần tử nào khác (không phải sidebar,
+    không phải header) lỡ tràn ra ngoài do padding/margin cộng dồn, dòng
+    này chặn nó sinh ra thanh cuộn ngang / đẩy nội dung dịch sang phải,
+    thay vì phải sửa từng chỗ một. Không ảnh hưởng cuộn dọc. */
+    html, body, [data-testid="stAppViewContainer"] {
+        overflow-x: hidden !important;
+        max-width: 100vw !important;
+    }
     </style>
 """
 st.markdown(hide_streamlit_chrome, unsafe_allow_html=True)
@@ -388,6 +429,15 @@ st.markdown(
         gap: 0.4rem !important;
         width: 100% !important;
         max-width: 100% !important;
+        /* FIX #2: Streamlit tạo gutter giữa các cột bằng cách cho HÀNG
+        (stHorizontalBlock) margin âm 2 bên rồi bù lại bằng padding dương
+        trên mỗi CỘT — 2 việc phải đi cùng nhau. Đoạn code cũ chỉ xoá
+        padding của cột (bên dưới) mà quên xoá margin âm của hàng, nên
+        hàng vẫn bị "kéo" rộng hơn container cha đúng bằng phần margin âm
+        đó, đẩy nút hamburger lòi ra ngoài mép phải màn hình (chỉ thấy
+        được hơn 1 nửa). Set lại margin: 0 để hàng khớp đúng 100% chiều
+        ngang của .st-key-app_header, không rộng hơn. */
+        margin: 0 !important;
     }
     .st-key-app_header [data-testid="column"] {
         /* Streamlit tự thêm padding 2 bên cho mỗi cột (gutter) — trên
