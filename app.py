@@ -200,7 +200,7 @@ for turn in st.session_state.history:
 # Chat input: Enter (or the built-in send arrow) submits; the "+" icon (via
 # accept_file) lets the user attach files, matching modern chat-app UIs.
 prompt = st.chat_input(
-    "Ask anything...",
+    "Ask fcb anything...",
     accept_file="multiple",
     file_type=["txt", "md", "csv", "json", "py", "log"],
 )
