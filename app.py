@@ -1,6 +1,7 @@
 import os
 import uuid
 import asyncio
+import threading
 import urllib.parse
 from datetime import datetime, timezone
 import streamlit as st
@@ -28,16 +29,36 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",  # start collapsed, like Claude's sidebar: just an icon until clicked
 )
-# CSS to hide Streamlit's default hamburger menu / footer watermark / toolbar
-# (Deploy button, GitHub icon, etc). IMPORTANT: do NOT hide `header` itself —
-# the sidebar's collapse/expand arrow lives inside it, so hiding `header`
-# would hide that arrow too and make the sidebar impossible to reopen once
-# collapsed.
+# CSS to hide Streamlit's default hamburger menu and "Deploy" button /
+# footer watermark. IMPORTANT: target these specific elements only —
+# do NOT hide the whole `header` or `[data-testid="stToolbar"]` container,
+# because the sidebar's re-open arrow (data-testid="stExpandSidebarButton")
+# lives inside that same toolbar. Hiding the whole toolbar hides that arrow
+# too, making a collapsed sidebar impossible to reopen.
+# =========================================================
+hide_streamlit_style = """
+    <style>
+    /* Ẩn Menu 3 chấm và Header ở góc trên */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Ẩn Footer và Badge logo Streamlit ở góc dưới */
+    footer {visibility: hidden;}
+    div[data-testid="stStatusWidget"] {visibility: hidden;}
+    
+    /* Thu gọn khoảng trắng thừa phía trên */
+    .block-container {
+        padding-top: 2rem;
+    }
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+# =========================================================
 hide_streamlit_chrome = """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    [data-testid="stToolbar"] {visibility: hidden;}
+    [data-testid="stAppDeployButton"] {visibility: hidden;}
     </style>
 """
 st.markdown(hide_streamlit_chrome, unsafe_allow_html=True)
@@ -201,9 +222,18 @@ async def translate_prompt_to_english(raw_text: str) -> str:
 
 def build_pollinations_url(prompt_en: str, width: int = 1024, height: int = 1024) -> str:
     """Build a direct image URL from Pollinations.ai's image endpoint.
-    NOTE: the working endpoint is https://image.pollinations.ai/prompt/... —
+    NOTE 1: the working endpoint is https://image.pollinations.ai/prompt/... —
     the bare 'pollinations.ai/prompt/...' form does not serve the image
-    directly, so we use the correct 'image.' subdomain here."""
+    directly, so we use the correct 'image.' subdomain here.
+    NOTE 2: model=flux is set explicitly (Pollinations' free, unrestricted
+    model) and enhance=false disables Pollinations' own prompt-rewriting
+    step. Without enhance=false, Pollinations can silently rewrite the
+    prompt server-side (e.g. when it flags a real person's name), which is
+    why the returned image can end up completely unrelated to what was
+    asked for. Even with this fix, free open models like Flux were not
+    fine-tuned on specific real people, so the likeness of named public
+    figures (e.g. a football player) may still be inaccurate — that's a
+    model-capability limit, not a bug in this code."""
     encoded = urllib.parse.quote(prompt_en)
     # Random seed so re-running the same prompt doesn't just return a cached
     # identical image.
@@ -211,10 +241,13 @@ def build_pollinations_url(prompt_en: str, width: int = 1024, height: int = 1024
     return (
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?width={width}&height={height}&nologo=true&seed={seed}"
+        f"&model=flux&enhance=false"
     )
 
 
 def render_model_comparison(per_model: list[tuple[str, str]]):
+    if not per_model:
+        return
     with st.expander(f"Compare {len(per_model)} individual model responses"):
         cols = st.columns(len(per_model))
         for col, (name, text) in zip(cols, per_model):
@@ -310,6 +343,153 @@ with st.sidebar:
 
 current_conv = st.session_state.conversations[st.session_state.current_id]
 
+# ---------------------------------------------------------
+# 3b. BACKGROUND JOBS (so a "Stop" button can actually cancel a call)
+# ---------------------------------------------------------
+# Streamlit normally blocks the whole UI thread while `asyncio.run(...)` is
+# in flight, so a Stop button rendered next to it can never be clicked in
+# time. To make Stop actually work, the AI calls run on a background thread
+# (with its own event loop) while the main thread stays free to render a
+# live "Stop" button inside an auto-refreshing fragment. Clicking Stop
+# cancels the underlying asyncio task, which aborts the in-flight request.
+
+def _start_job(coro, **meta) -> dict:
+    """Launch `coro` on a background thread. Returns a job dict that the
+    polling fragment below reads from and that the Stop button cancels."""
+    job = {
+        "stop_event": threading.Event(),
+        "loop": None,
+        "task": None,
+        "done": False,
+        "cancelled": False,
+        "error": None,
+        "result": None,
+        **meta,
+    }
+
+    def _runner():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        job["loop"] = loop
+        job["task"] = loop.create_task(coro)
+        try:
+            job["result"] = loop.run_until_complete(job["task"])
+        except asyncio.CancelledError:
+            job["cancelled"] = True
+        except Exception as e:  # surfaced to the user instead of crashing the app
+            job["error"] = e
+        finally:
+            job["done"] = True
+            loop.close()
+
+    threading.Thread(target=_runner, daemon=True).start()
+    return job
+
+
+def _cancel_job(job: dict):
+    job["stop_event"].set()
+    if job.get("loop") is not None and job.get("task") is not None:
+        job["loop"].call_soon_threadsafe(job["task"].cancel)
+
+
+_STAGE_LABELS = {
+    "ensemble": "Querying 3 AI models in parallel...",
+    "synthesis": "Synthesizing final answer...",
+    "image": "Translating prompt to English...",
+}
+
+
+@st.fragment(run_every=0.3)
+def _job_progress_fragment():
+    """Polls the active job every 0.3s and shows a live Stop button.
+    Runs as its own fragment so clicking Stop doesn't need to wait for a
+    full-page rerun."""
+    job = st.session_state.job
+    if job is None:
+        return
+    if job["done"]:
+        st.rerun()  # hand off to the main script to finalize / chain the job
+        return
+    st.info(f"⏳ {_STAGE_LABELS.get(job['stage'], 'Working...')}")
+    if st.button("⏹ Stop", key="stop_button"):
+        _cancel_job(job)
+
+
+def _finalize_job(job: dict):
+    """Called once a job's `done` flag is set. Either appends the finished
+    turn to history, chains to the next stage (ensemble -> synthesis), or
+    records that the user stopped it."""
+    if job["cancelled"]:
+        st.session_state.job = None
+        current_conv["history"].append({
+            "type": "text",
+            "user": job.get("display_user_text", job.get("user_text", "")),
+            "per_model": job.get("per_model", []),
+            "synthesis": "⏹ *Stopped by user.*",
+        })
+        return
+
+    if job["error"] is not None:
+        st.session_state.job = None
+        current_conv["history"].append({
+            "type": "text",
+            "user": job.get("display_user_text", job.get("user_text", "")),
+            "per_model": job.get("per_model", []),
+            "synthesis": f"⚠️ Error: {job['error']}",
+        })
+        return
+
+    if job["stage"] == "image":
+        prompt_en = job["result"] if not is_error_text(job["result"]) else job["user_text"].strip()
+        img_url = build_pollinations_url(prompt_en)
+        _maybe_set_title(current_conv, job["user_text"])
+        current_conv["history"].append({
+            "type": "image",
+            "user": job["user_text"],
+            "image_prompt_en": prompt_en,
+            "image_url": img_url,
+        })
+        st.session_state.job = None
+        return
+
+    if job["stage"] == "ensemble":
+        res_gemini, res_qwen, res_gptoss = job["result"]
+        per_model = [
+            (MODEL_GEMINI_LABEL, res_gemini),
+            (MODEL_QWEN_LABEL, res_qwen),
+            (MODEL_GPTOSS_LABEL, res_gptoss),
+        ]
+        leader_prompt = build_leader_prompt(job["context_line"], job["user_text"], per_model)
+        # Chain straight into stage 2 (still cancelable via a fresh Stop button)
+        st.session_state.job = _start_job(
+            get_final_answer(leader_prompt),
+            stage="synthesis",
+            user_text=job["user_text"],
+            display_user_text=job["display_user_text"],
+            per_model=per_model,
+        )
+        return
+
+    if job["stage"] == "synthesis":
+        st.session_state.job = None
+        _maybe_set_title(current_conv, job["user_text"])
+        current_conv["history"].append({
+            "type": "text",
+            "user": job["display_user_text"],
+            "per_model": job["per_model"],
+            "synthesis": job["result"],
+        })
+        return
+
+
+if "job" not in st.session_state:
+    st.session_state.job = None
+
+# A job that finished since the last poll gets resolved before we render
+# history, so it shows up as a normal completed turn below.
+if st.session_state.job is not None and st.session_state.job["done"]:
+    _finalize_job(st.session_state.job)
+
 # Render past turns of the active conversation
 for turn in current_conv["history"]:
     with st.chat_message("user"):
@@ -321,15 +501,24 @@ for turn in current_conv["history"]:
             render_model_comparison(turn["per_model"])
             st.markdown(turn["synthesis"])
 
+# Render the in-flight turn (if any) with its live Stop button
+if st.session_state.job is not None:
+    job = st.session_state.job
+    with st.chat_message("user"):
+        st.write(job.get("display_user_text", job.get("user_text", "")))
+    with st.chat_message("assistant"):
+        _job_progress_fragment()
+
 # Chat input: Enter (or the built-in send arrow) submits; the "+" icon (via
 # accept_file) lets the user attach files, matching modern chat-app UIs.
 prompt = st.chat_input(
     "Ask fcb anything... (or type 'draw ...' to generate an image)",
     accept_file="multiple",
     file_type=["txt", "md", "csv", "json", "py", "log"],
+    disabled=st.session_state.job is not None,
 )
 
-if prompt:
+if prompt and st.session_state.job is None:
     user_text = prompt if isinstance(prompt, str) else prompt.text
     files = [] if isinstance(prompt, str) else prompt.files
 
@@ -339,22 +528,12 @@ if prompt:
     if user_text or files:
         # ---------------- IMAGE GENERATION BRANCH ----------------
         if is_image_request(user_text):
-            with st.chat_message("user"):
-                st.write(user_text)
-
-            with st.chat_message("assistant"):
-                with st.spinner("Translating prompt to English..."):
-                    prompt_en = asyncio.run(translate_prompt_to_english(user_text))
-                img_url = build_pollinations_url(prompt_en)
-                st.image(img_url, caption=f"Prompt: {prompt_en}")
-
-            _maybe_set_title(current_conv, user_text)
-            current_conv["history"].append({
-                "type": "image",
-                "user": user_text,
-                "image_prompt_en": prompt_en,
-                "image_url": img_url,
-            })
+            st.session_state.job = _start_job(
+                translate_prompt_to_english(user_text),
+                stage="image",
+                user_text=user_text,
+            )
+            st.rerun()
 
         # ---------------- NORMAL TEXT / ENSEMBLE BRANCH ----------------
         else:
@@ -362,34 +541,14 @@ if prompt:
             display_user_text = user_text + (
                 f"\n\n\U0001F4CE {', '.join(attachment_names)}" if attachment_names else ""
             )
-
             context_line = build_context_line()
             full_query = context_line + user_text + attachment_block
 
-            with st.chat_message("user"):
-                st.write(display_user_text)
-
-            with st.chat_message("assistant"):
-                with st.spinner("Querying 3 AI models in parallel..."):
-                    res_gemini, res_qwen, res_gptoss = asyncio.run(run_ensemble(full_query))
-
-                per_model = [
-                    (MODEL_GEMINI_LABEL, res_gemini),
-                    (MODEL_QWEN_LABEL, res_qwen),
-                    (MODEL_GPTOSS_LABEL, res_gptoss),
-                ]
-                render_model_comparison(per_model)
-
-                leader_prompt = build_leader_prompt(context_line, user_text, per_model)
-                with st.spinner("Synthesizing final answer..."):
-                    final_summary = asyncio.run(get_final_answer(leader_prompt))
-
-                st.markdown(final_summary)
-
-            _maybe_set_title(current_conv, user_text)
-            current_conv["history"].append({
-                "type": "text",
-                "user": display_user_text,
-                "per_model": per_model,
-                "synthesis": final_summary,
-            })
+            st.session_state.job = _start_job(
+                run_ensemble(full_query),
+                stage="ensemble",
+                user_text=user_text,
+                display_user_text=display_user_text,
+                context_line=context_line,
+            )
+            st.rerun()
