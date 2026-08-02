@@ -22,7 +22,15 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 st.set_page_config(page_title="Multi-Model AI Assistant", layout="wide")
-
+# Đoạn CSS ẩn icon GitHub và Footer mặc định của Streamlit
+hide_github_icon = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+"""
+st.markdown(hide_github_icon, unsafe_allow_html=True)
 if not GEMINI_API_KEY or not GROQ_API_KEY:
     st.error(
         "Missing API key. Please set the GEMINI_API_KEY and GROQ_API_KEY "
