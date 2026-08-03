@@ -7,6 +7,7 @@ import html
 from datetime import datetime, timezone
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit_autorefresh import st_autorefresh
 from google import genai
 from google.genai import errors as genai_errors
 from openai import AsyncOpenAI
@@ -774,7 +775,7 @@ _STAGE_LABELS = {
 }
 
 
-@st.fragment(run_every=0.12)
+@st.fragment
 def _job_progress_fragment():
     """Polls the active job and shows a live Stop button, plus whatever
     text has streamed in so far for the current stage (typing effect), so
@@ -789,10 +790,27 @@ def _job_progress_fragment():
     time for a few more ticks — a steady top-to-bottom typing effect that
     doesn't depend on how fast the backend actually finished. This adds
     at most ~0.5-0.7s of visual delay, never blocks on real network
-    calls (the text is already fully in memory by then)."""
+    calls (the text is already fully in memory by then).
+
+    NOTE (fix): `st.fragment(run_every=...)` is a known Streamlit bug —
+    it silently does nothing on some versions/setups (confirmed by the
+    Streamlit team, exact repro conditions not yet pinned down). Symptom
+    was exactly this: dead silence during the whole job, then the full
+    result appearing all at once the moment it finished — because
+    run_every was supposed to "wake up" this fragment every 0.12s to
+    redraw it, but with it broken the fragment only redrew once, when
+    st.rerun() fired at job completion. Fixed by driving the rerun
+    ourselves via `streamlit_autorefresh`, a small, battle-tested
+    component the Streamlit community has used for years for exactly
+    this purpose (more reliable here than the still-fairly-new
+    run_every)."""
     job = st.session_state.job
     if job is None:
         return
+
+    # Forces this fragment to rerun every 120ms via a tiny JS timer
+    # component, instead of relying on the broken run_every.
+    st_autorefresh(interval=120, key="job_progress_autorefresh")
 
     if job["stage"] == "synthesis":
         render_model_comparison(job.get("per_model") or [], key="streaming_live")
