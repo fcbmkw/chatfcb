@@ -157,18 +157,17 @@ hide_streamlit_chrome = """
         font-weight: 600 !important;
     }
 
-    /* Khung hiển thị chữ đang stream của từng model (giai đoạn ensemble).
-    Yêu cầu: chiều cao 3 khung bằng nhau, khớp với khung NGẮN NHẤT, 2 khung
-    còn lại cuộn lên xuống để xem hết. CSS thuần không thể "đo" xem model
-    nào đang ngắn nhất tại từng thời điểm (chiều cao đó đổi liên tục theo
-    từng giây khi chữ chạy ra, cần JS đo DOM runtime mới làm được chính
-    xác) — nên mình dùng phương án tương đương về mặt trải nghiệm: cho cả
-    3 khung cùng 1 chiều cao CỐ ĐỊNH (đủ để đọc thoải mái), khung nào chữ
-    ít hơn thì trống phần dưới, khung nào chữ nhiều hơn thì tự cuộn được.
-    Kết quả nhìn giống hệt yêu cầu (3 khung cao bằng nhau + cuộn xem phần
-    dư) mà không cần thêm JS đo lường phức tạp. */
+    /* Khung hiển thị 3 câu trả lời gốc bên trong expander "Compare..." đã
+    thu gọn (KHÔNG áp dụng lúc đang stream — lúc đó hiện full độ dài).
+    Yêu cầu: chiều cao 3 khung bằng nhau, khớp với khung của kết quả NGẮN
+    NHẤT, 2 khung còn lại cuộn lên xuống để xem hết. CSS thuần không thể
+    "đo" chiều cao thật đã render (Streamlit không trả pixel thật của DOM
+    về Python, cần JS đo runtime mới chính xác tuyệt đối) — nên chiều cao
+    ở đây được ƯỚC LƯỢNG từ số ký tự của câu trả lời ngắn nhất (xem hàm
+    `_estimate_box_height_px`) rồi gán trực tiếp qua `style="height:...px"`
+    ngay tại nơi gọi (không cố định ở đây nữa, để không bị "ngắn quá,
+    không khớp kết quả nào" như trước). */
     .stream-box {
-        height: 190px;
         overflow-y: auto;
         border: 1px solid rgba(150, 150, 150, 0.35);
         border-radius: 8px;
@@ -437,9 +436,33 @@ def build_pollinations_url(prompt_en: str, width: int = 1024, height: int = 1024
     )
 
 
+def _estimate_box_height_px(texts: list[str]) -> int:
+    """Ước lượng chiều cao (px) vừa khít với câu trả lời NGẮN NHẤT trong
+    `texts`, để 3 khung cao bằng nhau và khớp với kết quả ngắn nhất (câu
+    dài hơn sẽ tự cuộn — xử lý bằng CSS overflow-y:auto ở nơi gọi).
+    Đây là ước lượng dựa trên SỐ KÝ TỰ (~44 ký tự/dòng, ~19px/dòng khớp
+    với font-size 0.82rem + line-height 1.35 đang dùng cho .stream-box),
+    KHÔNG phải đo pixel thật đã render — Streamlit không trả kích thước
+    DOM thật về phía Python để đo chính xác tuyệt đối (cần thêm 1 custom
+    JS component mới làm được), nên đây là cách gần đúng, đủ dùng cho
+    mục đích "3 khung cao đều & khớp cỡ kết quả ngắn nhất" mà không cần
+    thêm component riêng. Có chặn min/max để không bao giờ quá thấp
+    (không đọc được) hay quá cao (mất tác dụng thu gọn)."""
+    if not texts:
+        return 160
+    shortest = min(texts, key=len)
+    chars_per_line = 44
+    lines_by_length = -(-len(shortest) // chars_per_line)  # ceil
+    lines_by_breaks = shortest.count("\n") + 1
+    lines = max(1, lines_by_length, lines_by_breaks)
+    height = lines * 19 + 24  # 19px/dòng + đệm trên dưới
+    return max(90, min(height, 420))
+
+
 def render_model_comparison(per_model: list[tuple[str, str]], key: str):
     if not per_model:
         return
+    box_h = _estimate_box_height_px([text for _, text in per_model])
     with st.container(key=f"compare_wrap_{key}"):
         with st.expander(f"🔍 **Compare {len(per_model)} individual model responses** — click to see what each model said"):
             cols = st.columns(len(per_model))
@@ -449,13 +472,14 @@ def render_model_comparison(per_model: list[tuple[str, str]], key: str):
                         st.error(f"**{name}**")
                     else:
                         st.info(f"**{name}**")
-                    # Khung cuộn cố định chiều cao chỉ áp dụng ở ĐÂY (khi
-                    # người dùng bấm mở expander xem lại 3 câu trả lời đã
-                    # xong) — theo đúng yêu cầu: lúc đang stream thì hiện
-                    # full độ dài, chỉ khi thu nhỏ vào expander mới cần
-                    # khung cuộn để 3 khung nhìn cao đều nhau.
+                    # Khung cuộn chỉ áp dụng ở ĐÂY (khi người dùng bấm mở
+                    # expander xem lại 3 câu trả lời đã xong) — lúc đang
+                    # stream thì hiện full độ dài, không giới hạn chiều
+                    # cao. Chiều cao 3 khung khớp với câu trả lời NGẮN
+                    # NHẤT (box_h, ước lượng ở trên); câu dài hơn sẽ tự
+                    # cuộn được nhờ overflow-y:auto trong CSS .stream-box.
                     st.markdown(
-                        f'<div class="stream-box">{html.escape(text)}</div>',
+                        f'<div class="stream-box" style="height:{box_h}px;">{html.escape(text)}</div>',
                         unsafe_allow_html=True,
                     )
 
@@ -752,14 +776,44 @@ _STAGE_LABELS = {
 
 @st.fragment(run_every=0.12)
 def _job_progress_fragment():
-    """Polls the active job every 0.3s and shows a live Stop button.
-    Also renders whatever text has streamed in so far for the current
-    stage (typing effect), so the user watches progress instead of a
-    blank "⏳ ..." message for 5-10s. Runs as its own fragment so
-    clicking Stop doesn't need to wait for a full-page rerun."""
+    """Polls the active job and shows a live Stop button, plus whatever
+    text has streamed in so far for the current stage (typing effect), so
+    the user watches progress instead of a blank "⏳ ..." message.
+
+    Special case for "synthesis" (the Leader step): Groq can finish
+    generating the ENTIRE answer in well under a second — faster than a
+    human can perceive as "streaming" even at a fast poll rate, so it
+    just looked like "thinking... -> full answer" with nothing in
+    between. Instead of handing off to finalize the instant the API call
+    itself returns, we keep "revealing" the already-known text a bit at a
+    time for a few more ticks — a steady top-to-bottom typing effect that
+    doesn't depend on how fast the backend actually finished. This adds
+    at most ~0.5-0.7s of visual delay, never blocks on real network
+    calls (the text is already fully in memory by then)."""
     job = st.session_state.job
     if job is None:
         return
+
+    if job["stage"] == "synthesis":
+        render_model_comparison(job.get("per_model") or [], key="streaming_live")
+        st.caption("⏳ Synthesizing final answer...")
+        full_text = (job.get("answer_partial") or {}).get("text", "")
+        revealed = job.get("reveal_len", 0)
+        remaining = len(full_text) - revealed
+        if remaining > 0:
+            step = max(10, remaining // 5)  # ~5 ticks (~0.6s) to catch up to whatever's known right now
+            revealed = min(len(full_text), revealed + step)
+            job["reveal_len"] = revealed
+        st.markdown((full_text[:revealed] or "_...writing_") + (" ▌" if revealed else ""))
+
+        finished_typing = revealed >= len(full_text)
+        if job["done"] and (job["error"] is not None or job["cancelled"] or finished_typing):
+            st.rerun()  # API done AND (reveal caught up, or error/cancel) -> hand off to finalize
+            return
+        if st.button("⏹ Stop", key="stop_button"):
+            _cancel_job(job)
+        return
+
     if job["done"]:
         st.rerun()  # hand off to the main script to finalize / chain the job
         return
@@ -781,15 +835,6 @@ def _job_progress_fragment():
                 # chiều cao/không cuộn) — khung cuộn cố định chỉ áp dụng
                 # sau, bên trong expander "Compare..." lúc đã thu gọn.
                 st.write((text + " ▌") if text else "_...thinking_")
-    elif job["stage"] == "synthesis":
-        # Giữ nguyên phần "Compare 3 individual model responses" (giờ đã
-        # có đủ nội dung, không còn đang stream nữa) thay vì để nó biến
-        # mất ngay khi Leader bắt đầu tổng hợp — người dùng vẫn có thể mở
-        # ra xem lại 3 câu trả lời gốc trong lúc chờ Leader viết xong.
-        render_model_comparison(job.get("per_model") or [], key="streaming_live")
-        st.caption("⏳ Synthesizing final answer...")
-        text = (job.get("answer_partial") or {}).get("text", "")
-        st.markdown((text or "_...writing_") + (" ▌" if text else ""))
     else:
         st.info(f"⏳ {_STAGE_LABELS.get(job['stage'], 'Working...')}")
 
