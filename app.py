@@ -3,6 +3,7 @@ import uuid
 import asyncio
 import threading
 import urllib.parse
+import html
 from datetime import datetime, timezone
 import streamlit as st
 import streamlit.components.v1 as components
@@ -141,14 +142,41 @@ hide_streamlit_chrome = """
     /* FIX: làm nổi bật expander "Compare N individual model responses" —
     trước đó nó chỉ là 1 dòng chữ thường, rất dễ bị lướt qua/không nhận ra
     là có thể bấm vào xem 3 câu trả lời gốc. Thêm viền màu + nền nhạt để
-    mắt người dùng dừng lại ở đây. */
-    .st-key-compare_wrap [data-testid="stExpander"] {
+    mắt người dùng dừng lại ở đây.
+    LƯU Ý: container key giờ là động (compare_wrap_<turn_key>, để tránh
+    trùng key giữa các turn) nên class thật là "st-key-compare_wrap_xxx" —
+    selector class CHÍNH XÁC ".st-key-compare_wrap" không còn khớp nữa
+    (đó là lý do highlight tự nhiên "biến mất" dù code CSS vẫn còn).
+    Đổi sang attribute-selector kiểu "chứa chuỗi" để khớp mọi suffix. */
+    [class*="st-key-compare_wrap"] [data-testid="stExpander"] {
         border: 1px solid rgba(255, 149, 0, 0.55) !important;
         background: rgba(255, 149, 0, 0.06) !important;
         border-radius: 10px !important;
     }
-    .st-key-compare_wrap [data-testid="stExpander"] summary {
+    [class*="st-key-compare_wrap"] [data-testid="stExpander"] summary {
         font-weight: 600 !important;
+    }
+
+    /* Khung hiển thị chữ đang stream của từng model (giai đoạn ensemble).
+    Yêu cầu: chiều cao 3 khung bằng nhau, khớp với khung NGẮN NHẤT, 2 khung
+    còn lại cuộn lên xuống để xem hết. CSS thuần không thể "đo" xem model
+    nào đang ngắn nhất tại từng thời điểm (chiều cao đó đổi liên tục theo
+    từng giây khi chữ chạy ra, cần JS đo DOM runtime mới làm được chính
+    xác) — nên mình dùng phương án tương đương về mặt trải nghiệm: cho cả
+    3 khung cùng 1 chiều cao CỐ ĐỊNH (đủ để đọc thoải mái), khung nào chữ
+    ít hơn thì trống phần dưới, khung nào chữ nhiều hơn thì tự cuộn được.
+    Kết quả nhìn giống hệt yêu cầu (3 khung cao bằng nhau + cuộn xem phần
+    dư) mà không cần thêm JS đo lường phức tạp. */
+    .stream-box {
+        height: 190px;
+        overflow-y: auto;
+        border: 1px solid rgba(150, 150, 150, 0.35);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 0.82rem;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-break: break-word;
     }
     </style>
 """
@@ -530,10 +558,28 @@ st.markdown(
         width: 40px !important;
         height: 40px !important;
     }
+    /* Nút "New chat" ngay bên trái nút hamburger — cùng kỹ thuật
+    position:fixed để không bao giờ bị lệch/che dù màn hình rộng hẹp
+    thế nào, giống hệt lý do đã đổi nút hamburger ở trên. */
+    .st-key-newchat_btn_main {
+        position: fixed !important;
+        top: 0.85rem !important;
+        right: 3.05rem !important;   /* 0.9rem (lề nút hamburger) + 40px (rộng nút) + 0.35rem (khoảng cách) */
+        z-index: 999999 !important;
+        width: 40px !important;
+    }
+    .st-key-newchat_btn_main button {
+        width: 40px !important;
+        height: 40px !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+with st.container(key="newchat_btn_main"):
+    if st.button("", key="new_chat_main", icon=":material/edit_square:", help="New chat", use_container_width=True):
+        _new_conversation()
+        st.rerun()
 with st.container(key="hamburger_btn"):
     if st.button("", key="toggle_sidebar_main", icon=":material/menu:", help="Menu", use_container_width=True):
         st.session_state.sidebar_collapsed = not st.session_state.sidebar_collapsed
@@ -541,7 +587,7 @@ with st.container(key="hamburger_btn"):
 
 st.markdown(
     """
-    <div style="line-height:1.2; padding-right:52px;">
+    <div style="line-height:1.2; padding-right:98px;">
         <div style="font-size:clamp(1.05rem, 4vw, 1.8rem); font-weight:700;
                     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
             Multi-Model AI Assistant
@@ -723,8 +769,14 @@ def _job_progress_fragment():
             with col:
                 st.markdown(f"**{label}**")
                 text = mp.get(k, "")
-                st.caption((text[-600:] if text else "_...thinking_") + (" ▌" if text else ""))
+                shown = html.escape(text) + " ▌" if text else "<i>...thinking</i>"
+                st.markdown(f'<div class="stream-box">{shown}</div>', unsafe_allow_html=True)
     elif job["stage"] == "synthesis":
+        # Giữ nguyên phần "Compare 3 individual model responses" (giờ đã
+        # có đủ nội dung, không còn đang stream nữa) thay vì để nó biến
+        # mất ngay khi Leader bắt đầu tổng hợp — người dùng vẫn có thể mở
+        # ra xem lại 3 câu trả lời gốc trong lúc chờ Leader viết xong.
+        render_model_comparison(job.get("per_model") or [], key="streaming_live")
         st.caption("⏳ Synthesizing final answer...")
         text = (job.get("answer_partial") or {}).get("text", "")
         st.markdown((text or "_...writing_") + (" ▌" if text else ""))
