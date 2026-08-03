@@ -449,7 +449,15 @@ def render_model_comparison(per_model: list[tuple[str, str]], key: str):
                         st.error(f"**{name}**")
                     else:
                         st.info(f"**{name}**")
-                    st.write(text)
+                    # Khung cuộn cố định chiều cao chỉ áp dụng ở ĐÂY (khi
+                    # người dùng bấm mở expander xem lại 3 câu trả lời đã
+                    # xong) — theo đúng yêu cầu: lúc đang stream thì hiện
+                    # full độ dài, chỉ khi thu nhỏ vào expander mới cần
+                    # khung cuộn để 3 khung nhìn cao đều nhau.
+                    st.markdown(
+                        f'<div class="stream-box">{html.escape(text)}</div>',
+                        unsafe_allow_html=True,
+                    )
 
 
 def build_leader_prompt(context_line: str, user_text: str, per_model: list[tuple[str, str]]) -> str:
@@ -742,7 +750,7 @@ _STAGE_LABELS = {
 }
 
 
-@st.fragment(run_every=0.3)
+@st.fragment(run_every=0.12)
 def _job_progress_fragment():
     """Polls the active job every 0.3s and shows a live Stop button.
     Also renders whatever text has streamed in so far for the current
@@ -769,8 +777,10 @@ def _job_progress_fragment():
             with col:
                 st.markdown(f"**{label}**")
                 text = mp.get(k, "")
-                shown = html.escape(text) + " ▌" if text else "<i>...thinking</i>"
-                st.markdown(f'<div class="stream-box">{shown}</div>', unsafe_allow_html=True)
+                # Hiện FULL độ dài trong lúc đang stream (không giới hạn
+                # chiều cao/không cuộn) — khung cuộn cố định chỉ áp dụng
+                # sau, bên trong expander "Compare..." lúc đã thu gọn.
+                st.write((text + " ▌") if text else "_...thinking_")
     elif job["stage"] == "synthesis":
         # Giữ nguyên phần "Compare 3 individual model responses" (giờ đã
         # có đủ nội dung, không còn đang stream nữa) thay vì để nó biến
