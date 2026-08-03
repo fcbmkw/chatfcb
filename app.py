@@ -775,6 +775,27 @@ _STAGE_LABELS = {
 }
 
 
+def _advance_reveal(revealed: int, full_text: str, catch_up_ticks: int = 5) -> int:
+    """Moves a 'typewriter' cursor a bit closer to len(full_text) on every
+    call, instead of ever jumping straight to whatever text has already
+    arrived. This is the actual fix for "thinking... -> toàn bộ kết quả
+    hiện ra": Groq (Qwen/GPT-OSS) infers so fast that `on_chunk` is often
+    called only once or twice with most of the answer already in it —
+    real streaming at the network level, but invisible to the eye because
+    it arrives in one giant burst instead of small increments. By only
+    ever revealing a fraction of the known text per tick (~1/`catch_up_
+    ticks` of whatever's left), the ON-SCREEN reveal speed is decoupled
+    from how bursty the real arrival is — a fast burst just means a big
+    `full_text` to slowly catch up to, not an instant dump. Genuinely
+    incremental sources (Gemini's chunk-by-chunk stream) still look
+    smooth, since `remaining` never grows large in the first place."""
+    remaining = len(full_text) - revealed
+    if remaining <= 0:
+        return revealed
+    step = max(3, remaining // catch_up_ticks)
+    return min(len(full_text), revealed + step)
+
+
 @st.fragment
 def _job_progress_fragment():
     """Polls the active job and shows a live Stop button, plus whatever
@@ -816,17 +837,51 @@ def _job_progress_fragment():
         render_model_comparison(job.get("per_model") or [], key="streaming_live")
         st.caption("⏳ Synthesizing final answer...")
         full_text = (job.get("answer_partial") or {}).get("text", "")
-        revealed = job.get("reveal_len", 0)
-        remaining = len(full_text) - revealed
-        if remaining > 0:
-            step = max(10, remaining // 5)  # ~5 ticks (~0.6s) to catch up to whatever's known right now
-            revealed = min(len(full_text), revealed + step)
-            job["reveal_len"] = revealed
-        st.markdown((full_text[:revealed] or "_...writing_") + (" ▌" if revealed else ""))
-
+        revealed = _advance_reveal(job.get("reveal_len", 0), full_text)
+        job["reveal_len"] = revealed
         finished_typing = revealed >= len(full_text)
+        st.markdown((full_text[:revealed] or "_...writing_") + ("" if finished_typing else " ▌"))
+
         if job["done"] and (job["error"] is not None or job["cancelled"] or finished_typing):
             st.rerun()  # API done AND (reveal caught up, or error/cancel) -> hand off to finalize
+            return
+        if st.button("⏹ Stop", key="stop_button"):
+            _cancel_job(job)
+        return
+
+    if job["stage"] == "ensemble":
+        st.caption("⏳ Querying 3 AI models in parallel...")
+        mp = job.get("model_partials") or {}
+        # Con trỏ "đã gõ tới đâu" riêng cho từng model — khớp với
+        # `job["reveal_len"]` (số ít, dùng cho synthesis) nhưng ở đây cần
+        # 3 con trỏ độc lập vì 3 model không chạy cùng tốc độ.
+        reveal_lens = job.setdefault("reveal_lens", {"gemini": 0, "qwen": 0, "gptoss": 0})
+        labels_keys = [
+            (MODEL_GEMINI_LABEL, "gemini"),
+            (MODEL_QWEN_LABEL, "qwen"),
+            (MODEL_GPTOSS_LABEL, "gptoss"),
+        ]
+        cols = st.columns(3)
+        all_caught_up = True
+        for col, (label, k) in zip(cols, labels_keys):
+            with col:
+                st.markdown(f"**{label}**")
+                full_text = mp.get(k, "")
+                revealed = _advance_reveal(reveal_lens.get(k, 0), full_text)
+                reveal_lens[k] = revealed
+                if revealed < len(full_text):
+                    all_caught_up = False
+                shown = full_text[:revealed]
+                # FIX: trước đây hiện thẳng `full_text` (không throttle) —
+                # với Gemini (chunk nhỏ, đến từ từ) thì trông ổn, nhưng
+                # Groq (Qwen/GPT-OSS) suy luận nhanh tới mức toàn bộ câu
+                # trả lời thường về trong 1-2 lần gọi on_chunk, nên hiện
+                # thẳng = y hệt "đứng im rồi hiện hết cục". Giờ dùng cùng
+                # cơ chế gõ-dần như bên synthesis cho cả 3 cột.
+                st.write((shown + " ▌") if shown else "_...thinking_")
+
+        if job["done"] and (job["error"] is not None or job["cancelled"] or all_caught_up):
+            st.rerun()  # cả 3 API đã xong VÀ (đã gõ hiện hết chữ, hoặc lỗi/hủy) -> finalize
             return
         if st.button("⏹ Stop", key="stop_button"):
             _cancel_job(job)
@@ -836,26 +891,7 @@ def _job_progress_fragment():
         st.rerun()  # hand off to the main script to finalize / chain the job
         return
 
-    if job["stage"] == "ensemble":
-        st.caption("⏳ Querying 3 AI models in parallel...")
-        mp = job.get("model_partials") or {}
-        labels_keys = [
-            (MODEL_GEMINI_LABEL, "gemini"),
-            (MODEL_QWEN_LABEL, "qwen"),
-            (MODEL_GPTOSS_LABEL, "gptoss"),
-        ]
-        cols = st.columns(3)
-        for col, (label, k) in zip(cols, labels_keys):
-            with col:
-                st.markdown(f"**{label}**")
-                text = mp.get(k, "")
-                # Hiện FULL độ dài trong lúc đang stream (không giới hạn
-                # chiều cao/không cuộn) — khung cuộn cố định chỉ áp dụng
-                # sau, bên trong expander "Compare..." lúc đã thu gọn.
-                st.write((text + " ▌") if text else "_...thinking_")
-    else:
-        st.info(f"⏳ {_STAGE_LABELS.get(job['stage'], 'Working...')}")
-
+    st.info(f"⏳ {_STAGE_LABELS.get(job['stage'], 'Working...')}")
     if st.button("⏹ Stop", key="stop_button"):
         _cancel_job(job)
 
