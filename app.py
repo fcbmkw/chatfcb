@@ -315,13 +315,56 @@ def is_error_text(text: str) -> bool:
     return isinstance(text, str) and text.startswith("[Error")
 
 
+SKIPPED_MODEL_TEXT = "_(Bỏ qua — model Groq còn lại đã trả lời nhanh hơn, nên Leader không đợi thêm)_"
+
+
 async def run_ensemble(full_query: str, model_partials: dict = None):
+    """Trước đây: đợi CẢ 3 model xong (asyncio.gather) rồi mới cho Leader
+    tóm tắt -> tổng thời gian bị kéo dài bởi model chậm nhất trong 3, dù
+    Leader chỉ cần đủ thông tin để tổng hợp, không nhất thiết phải có cả 3.
+
+    Giờ: Gemini LUÔN bắt buộc phải đợi xong (yêu cầu của Zune). Trong 2
+    model chạy trên Groq (Qwen, GPT-OSS), chỉ đợi + giữ lại model nào XONG
+    TRƯỚC — model Groq còn lại bị `cancel()` ngay lập tức, không đợi thêm
+    dù nó có đang chạy dở. Kết quả: tổng thời gian chờ trước khi Leader
+    tóm tắt = max(thời gian Gemini, thời gian model Groq nhanh nhất) —
+    không còn bị model Groq chậm nhất (ví dụ do rate-limit/retry bất chợt)
+    kéo dài thêm nữa."""
     mp = model_partials if model_partials is not None else {}
-    return await asyncio.gather(
-        fetch_gemini(full_query, on_chunk=lambda t: mp.__setitem__("gemini", t)),
-        fetch_groq(full_query, "qwen/qwen3.6-27b", on_chunk=lambda t: mp.__setitem__("qwen", t)),      # replaces llama-3.3-70b-versatile (Groq retired it ~Aug 2026)
-        fetch_groq(full_query, "openai/gpt-oss-120b", on_chunk=lambda t: mp.__setitem__("gptoss", t)),  # replaces deepseek-r1-distill-llama-70b (decommissioned by Groq)
+    gemini_task = asyncio.create_task(
+        fetch_gemini(full_query, on_chunk=lambda t: mp.__setitem__("gemini", t))
     )
+    qwen_task = asyncio.create_task(
+        fetch_groq(full_query, "qwen/qwen3.6-27b", on_chunk=lambda t: mp.__setitem__("qwen", t))
+    )
+    gptoss_task = asyncio.create_task(
+        fetch_groq(full_query, "openai/gpt-oss-120b", on_chunk=lambda t: mp.__setitem__("gptoss", t))
+    )
+
+    # Đợi model Groq đầu tiên (bất kể Qwen hay GPT-OSS) xong, rồi hủy ngay
+    # model Groq còn lại đang chạy dở.
+    _done, pending = await asyncio.wait({qwen_task, gptoss_task}, return_when=asyncio.FIRST_COMPLETED)
+    for t in pending:
+        t.cancel()
+    if pending:
+        # Đợi cho việc hủy thực sự hoàn tất (chuyển sang trạng thái
+        # cancelled()) trước khi đọc .result()/.cancelled() bên dưới —
+        # nếu không, task có thể vẫn đang "pending hủy dở" và gây cảnh báo
+        # "Task was destroyed but it is pending" từ asyncio.
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    # Gemini bắt buộc phải có -> luôn đợi tới khi xong, dù đã có Groq rồi.
+    await gemini_task
+
+    res_gemini = gemini_task.result()
+    res_qwen = qwen_task.result() if not qwen_task.cancelled() else SKIPPED_MODEL_TEXT
+    res_gptoss = gptoss_task.result() if not gptoss_task.cancelled() else SKIPPED_MODEL_TEXT
+    if qwen_task.cancelled():
+        mp["qwen"] = SKIPPED_MODEL_TEXT
+    if gptoss_task.cancelled():
+        mp["gptoss"] = SKIPPED_MODEL_TEXT
+
+    return res_gemini, res_qwen, res_gptoss
 
 
 
@@ -1063,7 +1106,39 @@ if st.session_state.job is not None:
 # nữa. `st.audio_input` giữ nguyên bản ghi cuối cùng qua các lần rerun
 # (nó không tự xoá), nên phải so sánh hash với lần xử lý trước để KHÔNG
 # transcribe lại + gửi lặp vô hạn cùng 1 đoạn ghi âm mỗi khi trang rerun.
-audio_value = st.audio_input("🎤 Hoặc nhắn bằng giọng nói", disabled=st.session_state.job is not None)
+#
+# GHI CHÚ VỀ VIỆC "GỘP VÀO CHATBOX": `st.chat_input` là 1 component đóng
+# kín của Streamlit (không có API để nhét icon mic vào bên trong nó, khác
+# hẳn việc build UI kiểu ChatGPT từ đầu bằng HTML/JS thuần). Nên ở đây
+# dùng CSS bo góc + xoá khoảng cách để widget ghi âm nằm NGAY SÁT PHÍA
+# TRÊN ô chat, đọc thị giác như "1 thanh liền 2 tầng" thay vì icon nằm
+# bên trong ô nhập liệu thật. Nếu muốn icon mic nằm hẳn bên trong (giống
+# ChatGPT/Gemini pixel-perfect), cần viết 1 custom HTML/JS component
+# riêng (ghi âm bằng MediaRecorder API rồi gửi ngược data về Python) —
+# tốn công hơn hẳn, báo mình nếu muốn đi hướng đó.
+st.markdown(
+    """
+    <style>
+    /* Kéo sát khung ghi âm vào khung chat ngay bên dưới — bỏ khoảng
+    trắng mặc định của Streamlit giữa 2 widget để trông như 1 khối. */
+    .st-key-voice_bar {
+        margin-bottom: -1rem !important;
+    }
+    /* data-testid phỏng đoán theo đúng quy ước đặt tên của Streamlit
+    (stChatInput, stFileUploader, stTextInput, ... -> stAudioInput).
+    Nếu phiên bản Streamlit của bạn dùng tên khác, mở DevTools (F12) bấm
+    chuột phải vào khung ghi âm -> Inspect -> tìm thuộc tính data-testid
+    thật rồi đổi lại chuỗi bên dưới cho khớp. */
+    [data-testid="stAudioInput"] {
+        border-radius: 18px 18px 0 0 !important;
+        border-bottom: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+with st.container(key="voice_bar"):
+    audio_value = st.audio_input("🎤 Hoặc nhắn bằng giọng nói", disabled=st.session_state.job is not None)
 voice_prompt = None
 if audio_value is not None and st.session_state.job is None:
     audio_bytes = audio_value.getvalue()
