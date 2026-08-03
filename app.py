@@ -1,6 +1,7 @@
 import os
 import uuid
 import asyncio
+import hashlib
 import threading
 import urllib.parse
 import html
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
+from pypdf import PdfReader
 from google import genai
 from google.genai import errors as genai_errors
 from openai import AsyncOpenAI
@@ -278,6 +280,37 @@ async def fetch_groq(prompt: str, model_name: str, on_chunk=None) -> str:
         return f"[Error from {model_name}]: {e}"
 
 
+# Model candidates for speech-to-text, tried in order (same 404-fallback
+# idea as GEMINI_MODEL_CANDIDATES — Groq occasionally retires/renames
+# Whisper variants too).
+WHISPER_MODEL_CANDIDATES = ["whisper-large-v3-turbo", "whisper-large-v3"]
+
+
+async def transcribe_audio(audio_bytes: bytes) -> str:
+    """Chuyển đoạn ghi âm (WAV, do st.audio_input trả về) thành văn bản qua
+    Groq Whisper. Dùng chung `groq_client` (đã trỏ base_url của Groq) vì
+    Groq host Whisper trên LPU nên tốc độ transcribe rất nhanh (thường
+    dưới 1-2 giây cho vài chục giây ghi âm) — không cần fetch_gemini/OpenAI
+    riêng cho việc này. Không truyền `language` -> để model tự nhận diện
+    (hoạt động tốt với cả tiếng Việt, tiếng Anh, tiếng Nhật)."""
+    last_err = None
+    for model in WHISPER_MODEL_CANDIDATES:
+        try:
+            resp = await groq_client.audio.transcriptions.create(
+                model=model,
+                file=("voice.wav", audio_bytes, "audio/wav"),
+                response_format="text",
+            )
+            # response_format="text" thường trả thẳng str, nhưng một số
+            # phiên bản SDK vẫn bọc trong object có .text -> xử lý cả 2.
+            text = resp if isinstance(resp, str) else getattr(resp, "text", str(resp))
+            return text.strip()
+        except Exception as e:
+            last_err = e
+            continue
+    return f"[Error transcribing audio (tried: {', '.join(WHISPER_MODEL_CANDIDATES)})]: {last_err}"
+
+
 def is_error_text(text: str) -> bool:
     return isinstance(text, str) and text.startswith("[Error")
 
@@ -343,15 +376,37 @@ def build_context_line() -> str:
 
 
 def read_attachments(files) -> tuple[str, list[str]]:
-    """Read uploaded text-like files, truncated per file to stay within free-tier
-    token budgets. Returns (block_to_append_to_prompt, list_of_filenames)."""
+    """Read uploaded text-like files (and now PDFs), truncated per file to
+    stay within free-tier token budgets. Returns (block_to_append_to_prompt,
+    list_of_filenames).
+
+    FIX: PDF is a binary format (compressed streams, fonts, page structure),
+    not plain UTF-8 text, so the old
+    `f.read().decode("utf-8", errors="ignore")` on a .pdf produced garbage
+    binary noise instead of the actual text — and .pdf wasn't even in
+    `file_type` on the chat_input below, so it couldn't be attached at all.
+    Now .pdf is accepted and read page-by-page with `pypdf`, extracting the
+    real text layer. NOTE: this only works for PDFs that have a text layer
+    (typed/exported documents). A scanned/photographed PDF with no text
+    layer needs OCR first, which pypdf does not do — those will come back
+    empty."""
     block = ""
     names = []
     for f in files:
+        is_pdf = f.name.lower().endswith(".pdf")
         try:
-            content = f.read().decode("utf-8", errors="ignore")[:4000]
-        except Exception:
-            content = "(could not read this file as text)"
+            if is_pdf:
+                reader = PdfReader(f)
+                pages_text = []
+                for page in reader.pages:
+                    pages_text.append(page.extract_text() or "")
+                content = "\n".join(pages_text).strip()[:4000]
+                if not content:
+                    content = "(PDF has no extractable text layer — likely a scanned/image-only PDF, needs OCR)"
+            else:
+                content = f.read().decode("utf-8", errors="ignore")[:4000]
+        except Exception as e:
+            content = f"(could not read this file: {e})"
         names.append(f.name)
         block += f"\n\n[ATTACHED FILE: {f.name}]\n{content}"
     return block, names
@@ -597,7 +652,7 @@ st.markdown(
     .st-key-newchat_btn_main {
         position: fixed !important;
         top: 0.85rem !important;
-        right: 3.05rem !important;   /* 0.9rem (lề nút hamburger) + 40px (rộng nút) + 0.35rem (khoảng cách) */
+        right: 3.85rem !important;   /* 0.9rem (lề nút hamburger) + 2.5rem (40px rộng nút) + 0.45rem (khoảng cách) */
         z-index: 999999 !important;
         width: 40px !important;
     }
@@ -1002,14 +1057,38 @@ if st.session_state.job is not None:
     with st.chat_message("assistant"):
         _job_progress_fragment()
 
+# ---------------------------------------------------------
+# VOICE INPUT: bấm mic ghi âm -> tự động transcribe (Groq Whisper) -> gửi
+# thẳng vào chat như thể người dùng gõ tay, không cần bấm gửi thêm lần
+# nữa. `st.audio_input` giữ nguyên bản ghi cuối cùng qua các lần rerun
+# (nó không tự xoá), nên phải so sánh hash với lần xử lý trước để KHÔNG
+# transcribe lại + gửi lặp vô hạn cùng 1 đoạn ghi âm mỗi khi trang rerun.
+audio_value = st.audio_input("🎤 Hoặc nhắn bằng giọng nói", disabled=st.session_state.job is not None)
+voice_prompt = None
+if audio_value is not None and st.session_state.job is None:
+    audio_bytes = audio_value.getvalue()
+    audio_hash = hashlib.md5(audio_bytes).hexdigest()
+    if audio_hash != st.session_state.get("last_voice_hash"):
+        st.session_state.last_voice_hash = audio_hash
+        with st.spinner("🎙️ Đang chuyển giọng nói thành văn bản..."):
+            transcribed = asyncio.run(transcribe_audio(audio_bytes))
+        if is_error_text(transcribed):
+            st.error(transcribed)
+        elif transcribed:
+            voice_prompt = transcribed
+
 # Chat input: Enter (or the built-in send arrow) submits; the "+" icon (via
 # accept_file) lets the user attach files, matching modern chat-app UIs.
 prompt = st.chat_input(
     "Ask fcb everything...",
     accept_file="multiple",
-    file_type=["txt", "md", "csv", "json", "py", "log"],
+    file_type=["txt", "md", "csv", "json", "py", "log", "pdf"],
     disabled=st.session_state.job is not None,
 )
+
+# Giọng nói coi như đã "gõ" xong 1 tin nhắn -> ưu tiên xử lý như prompt
+# thật, dùng chung toàn bộ logic phân nhánh (ảnh/ensemble) bên dưới.
+prompt = voice_prompt or prompt
 
 if prompt and st.session_state.job is None:
     user_text = prompt if isinstance(prompt, str) else prompt.text
