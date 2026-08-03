@@ -775,24 +775,31 @@ _STAGE_LABELS = {
 }
 
 
-def _advance_reveal(revealed: int, full_text: str, catch_up_ticks: int = 5) -> int:
+def _advance_reveal(revealed: int, full_text: str, min_step: int = 2, max_step: int = 18, spread_ticks: int = 45) -> int:
     """Moves a 'typewriter' cursor a bit closer to len(full_text) on every
     call, instead of ever jumping straight to whatever text has already
     arrived. This is the actual fix for "thinking... -> toàn bộ kết quả
     hiện ra": Groq (Qwen/GPT-OSS) infers so fast that `on_chunk` is often
     called only once or twice with most of the answer already in it —
     real streaming at the network level, but invisible to the eye because
-    it arrives in one giant burst instead of small increments. By only
-    ever revealing a fraction of the known text per tick (~1/`catch_up_
-    ticks` of whatever's left), the ON-SCREEN reveal speed is decoupled
-    from how bursty the real arrival is — a fast burst just means a big
-    `full_text` to slowly catch up to, not an instant dump. Genuinely
-    incremental sources (Gemini's chunk-by-chunk stream) still look
-    smooth, since `remaining` never grows large in the first place."""
+    it arrives in one giant burst instead of small increments.
+
+    FIX (round 2): the first version divided whatever's left into a fixed
+    ~5 steps (`remaining // 5`), so a 500-char burst revealed itself in
+    chunks of ~100 characters — visually "half, then the rest", not a
+    smooth per-character typing motion like ChatGPT/Gemini. The actual
+    ChatGPT-style effect comes from a roughly CONSTANT reveal speed
+    (a handful of characters per tick) regardless of how much text is
+    waiting, not from spreading a variable backlog over a fixed number of
+    steps. `min_step`/`max_step` keep that speed small and steady; the
+    `remaining // spread_ticks` term only kicks in to speed up slightly
+    for very long backlogs so a huge burst doesn't take forever to finish
+    typing, but it's capped by `max_step` so it never turns back into a
+    single big jump."""
     remaining = len(full_text) - revealed
     if remaining <= 0:
         return revealed
-    step = max(3, remaining // catch_up_ticks)
+    step = min(max_step, max(min_step, remaining // spread_ticks))
     return min(len(full_text), revealed + step)
 
 
@@ -829,9 +836,12 @@ def _job_progress_fragment():
     if job is None:
         return
 
-    # Forces this fragment to rerun every 120ms via a tiny JS timer
-    # component, instead of relying on the broken run_every.
-    st_autorefresh(interval=120, key="job_progress_autorefresh")
+    # Forces this fragment to rerun every 80ms via a tiny JS timer
+    # component, instead of relying on the broken run_every. 80ms (thay vì
+    # 120ms trước đó) cho nhiều tick hơn mỗi giây -> mỗi tick chỉ cần tiến
+    # một bước rất nhỏ (xem _advance_reveal) để đạt cùng tốc độ gõ, nhưng
+    # nhìn mượt hơn hẳn vì bước nhảy nhỏ hơn, tick dày hơn.
+    st_autorefresh(interval=80, key="job_progress_autorefresh")
 
     if job["stage"] == "synthesis":
         render_model_comparison(job.get("per_model") or [], key="streaming_live")
