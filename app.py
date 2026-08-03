@@ -219,7 +219,7 @@ groq_client = AsyncOpenAI(
 #
 # STREAMING: mỗi fetch_* nhận thêm `on_chunk` (callback, optional) — mỗi
 # khi có thêm 1 đoạn chữ mới từ model, gọi on_chunk(toàn_bộ_chữ_đã_có_đến_
-# giờ). Bên gọi (run_ensemble / get_final_answer) truyền vào 1 lambda ghi
+# giờ). Bên gọi (run_turn / get_final_answer) truyền vào 1 lambda ghi
 # thẳng vào 1 dict dùng chung với `_job_progress_fragment` — nhờ vậy UI có
 # thể vẽ lại chữ đang "gõ dần" mỗi 0.3s thay vì màn hình trống đợi đủ câu
 # trả lời mới hiện. Không thay đổi tổng thời gian model trả lời xong,
@@ -315,56 +315,73 @@ def is_error_text(text: str) -> bool:
     return isinstance(text, str) and text.startswith("[Error")
 
 
-SKIPPED_MODEL_TEXT = "_(Bỏ qua — model Groq còn lại đã trả lời nhanh hơn, nên Leader không đợi thêm)_"
+async def run_turn(full_query: str, context_line: str, user_text: str,
+                    model_partials: dict, leader_partial: dict, phase_holder: dict):
+    """Chạy trọn 1 lượt hỏi-đáp trong DUY NHẤT một coroutine/task (khác với
+    bản trước: 2 job nối tiếp ensemble -> synthesis).
 
+    Cả 3 model (Gemini, Qwen, GPT-OSS) đều chạy và tự in kết quả ra bình
+    thường qua `model_partials`, KHÔNG có model nào bị hủy/skip — đúng yêu
+    cầu "cứ để AI in kết quả ra như thông thường". Leader chỉ cần đợi
+    Gemini (bắt buộc) + model Groq nào xong trước để bắt đầu tổng hợp
+    ngay; model Groq còn lại (nếu chưa xong) cứ tiếp tục chạy song song
+    với Leader — không chặn Leader phải đợi nó, nhưng cũng không bị hủy
+    nửa chừng, nó vẫn hoàn thành và cột của nó vẫn hiện đủ câu trả lời
+    thật (chỉ là Leader không dùng để tổng hợp).
 
-async def run_ensemble(full_query: str, model_partials: dict = None):
-    """Trước đây: đợi CẢ 3 model xong (asyncio.gather) rồi mới cho Leader
-    tóm tắt -> tổng thời gian bị kéo dài bởi model chậm nhất trong 3, dù
-    Leader chỉ cần đủ thông tin để tổng hợp, không nhất thiết phải có cả 3.
-
-    Giờ: Gemini LUÔN bắt buộc phải đợi xong (yêu cầu của Zune). Trong 2
-    model chạy trên Groq (Qwen, GPT-OSS), chỉ đợi + giữ lại model nào XONG
-    TRƯỚC — model Groq còn lại bị `cancel()` ngay lập tức, không đợi thêm
-    dù nó có đang chạy dở. Kết quả: tổng thời gian chờ trước khi Leader
-    tóm tắt = max(thời gian Gemini, thời gian model Groq nhanh nhất) —
-    không còn bị model Groq chậm nhất (ví dụ do rate-limit/retry bất chợt)
-    kéo dài thêm nữa."""
-    mp = model_partials if model_partials is not None else {}
+    `phase_holder["phase"]` đổi từ "ensemble" -> "synthesis" ngay khi
+    Leader bắt đầu chạy — đây là cách UI (fragment polling bên dưới) biết
+    lúc nào chuyển hiển thị từ "3 cột đang trả lời" sang "Leader đang tổng
+    hợp", dù toàn bộ vẫn chỉ là MỘT job/task duy nhất."""
     gemini_task = asyncio.create_task(
-        fetch_gemini(full_query, on_chunk=lambda t: mp.__setitem__("gemini", t))
+        fetch_gemini(full_query, on_chunk=lambda t: model_partials.__setitem__("gemini", t))
     )
     qwen_task = asyncio.create_task(
-        fetch_groq(full_query, "qwen/qwen3.6-27b", on_chunk=lambda t: mp.__setitem__("qwen", t))
+        fetch_groq(full_query, "qwen/qwen3.6-27b", on_chunk=lambda t: model_partials.__setitem__("qwen", t))
     )
     gptoss_task = asyncio.create_task(
-        fetch_groq(full_query, "openai/gpt-oss-120b", on_chunk=lambda t: mp.__setitem__("gptoss", t))
+        fetch_groq(full_query, "openai/gpt-oss-120b", on_chunk=lambda t: model_partials.__setitem__("gptoss", t))
     )
+    all_tasks = [gemini_task, qwen_task, gptoss_task]
 
-    # Đợi model Groq đầu tiên (bất kể Qwen hay GPT-OSS) xong, rồi hủy ngay
-    # model Groq còn lại đang chạy dở.
-    _done, pending = await asyncio.wait({qwen_task, gptoss_task}, return_when=asyncio.FIRST_COMPLETED)
-    for t in pending:
-        t.cancel()
-    if pending:
-        # Đợi cho việc hủy thực sự hoàn tất (chuyển sang trạng thái
-        # cancelled()) trước khi đọc .result()/.cancelled() bên dưới —
-        # nếu không, task có thể vẫn đang "pending hủy dở" và gây cảnh báo
-        # "Task was destroyed but it is pending" từ asyncio.
-        await asyncio.gather(*pending, return_exceptions=True)
+    try:
+        # Đợi model Groq đầu tiên (bất kể Qwen hay GPT-OSS) xong.
+        done_first, pending = await asyncio.wait({qwen_task, gptoss_task}, return_when=asyncio.FIRST_COMPLETED)
+        # Gemini bắt buộc phải có -> luôn đợi tới khi xong.
+        await gemini_task
+        res_gemini = gemini_task.result()
 
-    # Gemini bắt buộc phải có -> luôn đợi tới khi xong, dù đã có Groq rồi.
-    await gemini_task
+        fastest_pairs = []
+        for t in done_first:
+            label = MODEL_QWEN_LABEL if t is qwen_task else MODEL_GPTOSS_LABEL
+            fastest_pairs.append((label, t.result()))
 
-    res_gemini = gemini_task.result()
-    res_qwen = qwen_task.result() if not qwen_task.cancelled() else SKIPPED_MODEL_TEXT
-    res_gptoss = gptoss_task.result() if not gptoss_task.cancelled() else SKIPPED_MODEL_TEXT
-    if qwen_task.cancelled():
-        mp["qwen"] = SKIPPED_MODEL_TEXT
-    if gptoss_task.cancelled():
-        mp["gptoss"] = SKIPPED_MODEL_TEXT
+        phase_holder["phase"] = "synthesis"
+        leader_prompt = build_leader_prompt(
+            context_line, user_text, [(MODEL_GEMINI_LABEL, res_gemini)] + fastest_pairs
+        )
+        leader_task = asyncio.create_task(
+            get_final_answer(leader_prompt, on_chunk=lambda t: leader_partial.__setitem__("text", t))
+        )
+        all_tasks.append(leader_task)
 
-    return res_gemini, res_qwen, res_gptoss
+        # Leader chạy song song với model Groq còn lại (nếu có) — không
+        # hủy nó, cứ để nó tự chạy xong và in kết quả thật ra cột của nó.
+        await asyncio.gather(leader_task, *pending, return_exceptions=True)
+
+        per_model = [
+            (MODEL_GEMINI_LABEL, res_gemini),
+            (MODEL_QWEN_LABEL, qwen_task.result()),
+            (MODEL_GPTOSS_LABEL, gptoss_task.result()),
+        ]
+        return per_model, leader_task.result()
+    except asyncio.CancelledError:
+        # Bấm Stop -> hủy dứt điểm mọi task con còn đang chạy dở, tránh
+        # chúng bị bỏ mồ côi trong event loop khi loop.close() được gọi.
+        for t in all_tasks:
+            if not t.done():
+                t.cancel()
+        raise
 
 
 
@@ -867,8 +884,6 @@ def _cancel_job(job: dict):
 
 
 _STAGE_LABELS = {
-    "ensemble": "Querying 3 AI models in parallel...",
-    "synthesis": "Synthesizing final answer...",
     "image": "Translating prompt to English...",
 }
 
@@ -941,56 +956,57 @@ def _job_progress_fragment():
     # nhìn mượt hơn hẳn vì bước nhảy nhỏ hơn, tick dày hơn.
     st_autorefresh(interval=80, key="job_progress_autorefresh")
 
-    if job["stage"] == "synthesis":
-        render_model_comparison(job.get("per_model") or [], key="streaming_live")
-        st.caption("⏳ Synthesizing final answer...")
-        full_text = (job.get("answer_partial") or {}).get("text", "")
-        revealed = _advance_reveal(job.get("reveal_len", 0), full_text)
-        job["reveal_len"] = revealed
-        finished_typing = revealed >= len(full_text)
-        st.markdown((full_text[:revealed] or "_...writing_") + ("" if finished_typing else " ▌"))
-
-        if job["done"] and (job["error"] is not None or job["cancelled"] or finished_typing):
-            st.rerun()  # API done AND (reveal caught up, or error/cancel) -> hand off to finalize
-            return
-        if st.button("⏹ Stop", key="stop_button"):
-            _cancel_job(job)
-        return
-
-    if job["stage"] == "ensemble":
-        st.caption("⏳ Querying 3 AI models in parallel...")
+    if job["stage"] == "turn":
+        phase = (job.get("phase_holder") or {}).get("phase", "ensemble")
         mp = job.get("model_partials") or {}
-        # Con trỏ "đã gõ tới đâu" riêng cho từng model — khớp với
-        # `job["reveal_len"]` (số ít, dùng cho synthesis) nhưng ở đây cần
-        # 3 con trỏ độc lập vì 3 model không chạy cùng tốc độ.
+        # Con trỏ "đã gõ tới đâu" riêng cho từng model.
         reveal_lens = job.setdefault("reveal_lens", {"gemini": 0, "qwen": 0, "gptoss": 0})
+
+        if phase == "synthesis":
+            # Leader đã bắt đầu chạy -> hiện khung so sánh 3 model (dùng
+            # ngay dữ liệu real-time trong model_partials, vì lúc này có
+            # thể model Groq chậm hơn vẫn đang chạy dở song song) + hiệu
+            # ứng gõ chữ cho câu trả lời của Leader.
+            live_per_model = [
+                (MODEL_GEMINI_LABEL, mp.get("gemini", "")),
+                (MODEL_QWEN_LABEL, mp.get("qwen", "")),
+                (MODEL_GPTOSS_LABEL, mp.get("gptoss", "")),
+            ]
+            render_model_comparison(live_per_model, key="streaming_live")
+            st.caption("⏳ Synthesizing final answer...")
+            full_text = (job.get("leader_partial") or {}).get("text", "")
+            revealed = _advance_reveal(job.get("reveal_len", 0), full_text)
+            job["reveal_len"] = revealed
+            finished_typing = revealed >= len(full_text)
+            st.markdown((full_text[:revealed] or "_...writing_") + ("" if finished_typing else " ▌"))
+
+            if job["done"] and (job["error"] is not None or job["cancelled"] or finished_typing):
+                st.rerun()  # API done AND (reveal caught up, or error/cancel) -> hand off to finalize
+                return
+            if st.button("⏹ Stop", key="stop_button"):
+                _cancel_job(job)
+            return
+
+        # phase == "ensemble": cả 3 model đang chạy, chưa model Groq nào
+        # xong -> hiện 3 cột như bình thường, không có model nào bị đánh
+        # dấu "bỏ qua" (việc quyết định model nào Leader sẽ dùng chỉ xảy
+        # ra ở phía trong run_turn, không ảnh hưởng tới hiển thị ở đây).
+        st.caption("⏳ Querying 3 AI models in parallel...")
         labels_keys = [
             (MODEL_GEMINI_LABEL, "gemini"),
             (MODEL_QWEN_LABEL, "qwen"),
             (MODEL_GPTOSS_LABEL, "gptoss"),
         ]
         cols = st.columns(3)
-        all_caught_up = True
         for col, (label, k) in zip(cols, labels_keys):
             with col:
                 st.markdown(f"**{label}**")
                 full_text = mp.get(k, "")
                 revealed = _advance_reveal(reveal_lens.get(k, 0), full_text)
                 reveal_lens[k] = revealed
-                if revealed < len(full_text):
-                    all_caught_up = False
                 shown = full_text[:revealed]
-                # FIX: trước đây hiện thẳng `full_text` (không throttle) —
-                # với Gemini (chunk nhỏ, đến từ từ) thì trông ổn, nhưng
-                # Groq (Qwen/GPT-OSS) suy luận nhanh tới mức toàn bộ câu
-                # trả lời thường về trong 1-2 lần gọi on_chunk, nên hiện
-                # thẳng = y hệt "đứng im rồi hiện hết cục". Giờ dùng cùng
-                # cơ chế gõ-dần như bên synthesis cho cả 3 cột.
                 st.write((shown + " ▌") if shown else "_...thinking_")
 
-        if job["done"] and (job["error"] is not None or job["cancelled"] or all_caught_up):
-            st.rerun()  # cả 3 API đã xong VÀ (đã gõ hiện hết chữ, hoặc lỗi/hủy) -> finalize
-            return
         if st.button("⏹ Stop", key="stop_button"):
             _cancel_job(job)
         return
@@ -1010,20 +1026,32 @@ def _finalize_job(job: dict):
     records that the user stopped it."""
     if job["cancelled"]:
         st.session_state.job = None
+        mp = job.get("model_partials") or {}
+        per_model = [
+            (MODEL_GEMINI_LABEL, mp.get("gemini", "")),
+            (MODEL_QWEN_LABEL, mp.get("qwen", "")),
+            (MODEL_GPTOSS_LABEL, mp.get("gptoss", "")),
+        ] if job.get("stage") == "turn" else job.get("per_model", [])
         current_conv["history"].append({
             "type": "text",
             "user": job.get("display_user_text", job.get("user_text", "")),
-            "per_model": job.get("per_model", []),
+            "per_model": per_model,
             "synthesis": "⏹ *Stopped by user.*",
         })
         return
 
     if job["error"] is not None:
         st.session_state.job = None
+        mp = job.get("model_partials") or {}
+        per_model = [
+            (MODEL_GEMINI_LABEL, mp.get("gemini", "")),
+            (MODEL_QWEN_LABEL, mp.get("qwen", "")),
+            (MODEL_GPTOSS_LABEL, mp.get("gptoss", "")),
+        ] if job.get("stage") == "turn" else job.get("per_model", [])
         current_conv["history"].append({
             "type": "text",
             "user": job.get("display_user_text", job.get("user_text", "")),
-            "per_model": job.get("per_model", []),
+            "per_model": per_model,
             "synthesis": f"⚠️ Error: {job['error']}",
         })
         return
@@ -1041,34 +1069,15 @@ def _finalize_job(job: dict):
         st.session_state.job = None
         return
 
-    if job["stage"] == "ensemble":
-        res_gemini, res_qwen, res_gptoss = job["result"]
-        per_model = [
-            (MODEL_GEMINI_LABEL, res_gemini),
-            (MODEL_QWEN_LABEL, res_qwen),
-            (MODEL_GPTOSS_LABEL, res_gptoss),
-        ]
-        leader_prompt = build_leader_prompt(job["context_line"], job["user_text"], per_model)
-        answer_partial = {"text": ""}
-        # Chain straight into stage 2 (still cancelable via a fresh Stop button)
-        st.session_state.job = _start_job(
-            get_final_answer(leader_prompt, on_chunk=lambda t: answer_partial.__setitem__("text", t)),
-            stage="synthesis",
-            user_text=job["user_text"],
-            display_user_text=job["display_user_text"],
-            per_model=per_model,
-            answer_partial=answer_partial,
-        )
-        return
-
-    if job["stage"] == "synthesis":
+    if job["stage"] == "turn":
+        per_model, leader_answer = job["result"]
         st.session_state.job = None
         _maybe_set_title(current_conv, job["user_text"])
         current_conv["history"].append({
             "type": "text",
             "user": job["display_user_text"],
-            "per_model": job["per_model"],
-            "synthesis": job["result"],
+            "per_model": per_model,
+            "synthesis": leader_answer,
         })
         return
 
@@ -1193,12 +1202,15 @@ if prompt and st.session_state.job is None:
             full_query = context_line + history_block + user_text + attachment_block
 
             model_partials = {"gemini": "", "qwen": "", "gptoss": ""}
+            leader_partial = {"text": ""}
+            phase_holder = {"phase": "ensemble"}
             st.session_state.job = _start_job(
-                run_ensemble(full_query, model_partials),
-                stage="ensemble",
+                run_turn(full_query, context_line, user_text, model_partials, leader_partial, phase_holder),
+                stage="turn",
                 user_text=user_text,
                 display_user_text=display_user_text,
-                context_line=context_line,
                 model_partials=model_partials,
+                leader_partial=leader_partial,
+                phase_holder=phase_holder,
             )
             st.rerun()
