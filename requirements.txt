@@ -1,4 +1,4 @@
 streamlit>=1.50
 google-genai
 openai
-pip install streamlit-autorefresh
+streamlit-autorefresh
