@@ -580,7 +580,7 @@ def render_model_comparison(per_model: list[tuple[str, str]], key: str):
         return
     box_h = _estimate_box_height_px([text for _, text in per_model])
     with st.container(key=f"compare_wrap_{key}"):
-        with st.expander(f"🔍 **Compare {len(per_model)} individual model responses** — click to see what each model said"):
+        with st.expander(f"🔍 **Compare {len(per_model)} individual model responses** — click to see what each model said", expanded=True):
             cols = st.columns(len(per_model))
             for col, (name, text) in zip(cols, per_model):
                 with col:
@@ -732,26 +732,45 @@ st.markdown(
     /* Nút mic (voice) ngay bên trái nút "New chat" — cùng hàng, cùng kỹ
     thuật position:fixed. Widget gốc st.audio_input hỗ trợ sẵn width=40
     (px) + label_visibility="collapsed" nên không cần "chế" CSS ẩn label
-    như trước — chỉ còn phải định vị đúng chỗ trong hàng 3 nút. LƯU Ý:
-    khi đang ghi âm, chính widget này sẽ tự hiện thêm sóng âm/nút dừng —
-    phần đó có thể rộng hơn 40px lúc đang ghi (không cách nào tránh, vì
-    đó là UI ghi âm bắt buộc phải có để bấm dừng), nhưng lúc rảnh
-    (không ghi âm) nó co lại đúng 1 icon 40x40 như 2 nút kia.
+    như trước — chỉ còn phải định vị đúng chỗ trong hàng 3 nút.
+
+    FIX (khung + chiều cao): trước đây chỉ set width, không set height,
+    nên widget audio_input tự nhiên cao hơn hẳn 2 nút kia (nó vốn có
+    padding/dòng chữ thời lượng ghi âm bên trong) và không có khung/viền
+    như st.button — nhìn lệch hẳn so với New Chat/Menu. Giờ ép height:40px
+    + overflow:hidden (cắt bớt phần dư dọc lúc RẢNH) + border+border-radius
+    mô phỏng đúng khung nút mặc định của Streamlit.
+
+    LƯU Ý QUAN TRỌNG: lúc đang GHI ÂM, chính widget sẽ tự hiện thêm sóng
+    âm + thời lượng + nút dừng — phần đó chắc chắn cần nhiều hơn 40x40px.
+    Vì đã set overflow:hidden để có khung gọn lúc rảnh, phần UI ghi âm mở
+    rộng đó SẼ BỊ CẮT/khó thao tác trong lúc đang ghi — đây là đánh đổi
+    không tránh được giữa "gọn lúc rảnh" và "đủ chỗ lúc ghi âm" mà không
+    viết hẳn 1 component riêng. Nếu bấm ghi âm thấy không thao tác được
+    (không bấm dừng/xem sóng âm được), báo mình để đổi hướng khác (ví dụ
+    cho phép nó tự phình to lúc ghi, chấp nhận tạm thời che icon cạnh nó).
     */
     .st-key-voice_btn_main {
         position: fixed !important;
         top: 0.85rem !important;
         right: 6.8rem !important;   /* 3.85rem (lề nút New chat) + 2.5rem (40px rộng) + 0.45rem (khoảng cách) */
         z-index: 999999 !important;
-        width: 40px !important;   /* THIẾU dòng này là lý do không thấy nút: container mặc định rộng 100% viewport, đẩy widget 40px thật sự ra khỏi màn hình dù đã position:fixed đúng chỗ */
+        width: 40px !important;
+        height: 40px !important;
+        overflow: hidden !important;
+        border-radius: 0.5rem !important;
     }
-    /* Phòng hờ thêm 1 lớp nữa ngay trên chính widget (không chỉ container
-    ngoài) — testid "stAudioInput" đã xác nhận là tên thật (soi trực tiếp
-    trong file JS đã build của Streamlit, không còn đoán mò như lần
-    trước), phòng khi tham số width=40 truyền vào st.audio_input không áp
-    dụng đúng như mong đợi. */
     .st-key-voice_btn_main [data-testid="stAudioInput"] {
         width: 40px !important;
+        height: 40px !important;
+        min-height: 40px !important;
+        border: 1px solid rgba(128, 128, 128, 0.35) !important;
+        border-radius: 0.5rem !important;
+        background: transparent !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        padding: 0 !important;
     }
     </style>
     """,
@@ -1160,6 +1179,25 @@ if st.session_state.job is not None:
         if not job["done"]:
             if st.button("⏹ Stop", key="stop_button"):
                 _cancel_job(job)
+
+    # FIX (nút Stop bấm không ăn thua): trước đây, phần NGOÀI fragment
+    # (chỗ vẽ nút Stop + gọi _finalize_job ở trên cùng file) không có cơ
+    # chế tự rerun RIÊNG của nó — nó chỉ full-rerun khi người dùng bấm 1
+    # widget khác ở ngoài (New Chat, chat_input...) HOẶC khi fragment bên
+    # trong tự gọi st.rerun(). Nhưng `st.rerun()` gọi TỪ BÊN TRONG 1
+    # fragment không đảm bảo luôn full-rerun ra ngoài (tuỳ phiên bản/tình
+    # huống, có thể chỉ rerun đúng phạm vi fragment đó). Kết quả đúng như
+    # Zune gặp: bấm Stop -> tín hiệu hủy ĐÃ gửi đúng (model dừng thật) ->
+    # nhưng phần ngoài không tự rerun để (a) ẩn nút Stop / (b) gọi
+    # _finalize_job & hiện "Stopped by user." — phải đợi tới khi bấm 1 nút
+    # khác (New Chat) mới vô tình kích hoạt full-rerun, mọi thứ mới cập
+    # nhật đúng.
+    #
+    # Thêm 1 autorefresh RIÊNG ở đây (300ms, không cần nhanh như hiệu ứng
+    # gõ chữ 80ms bên trong fragment) — đảm bảo phần NGOÀI này luôn tự
+    # full-rerun đều đặn trong lúc có job đang chạy, không phụ thuộc vào
+    # cơ chế rerun nội bộ của fragment nữa.
+    st_autorefresh(interval=300, key="outer_job_poll")
 
 # ---------------------------------------------------------
 # VOICE INPUT (xử lý): widget mic thật (audio_value) đã được đặt lên hàng
