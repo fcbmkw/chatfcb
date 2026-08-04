@@ -671,6 +671,15 @@ if st.session_state.current_id not in st.session_state.conversations:
 if "sidebar_collapsed" not in st.session_state:
     st.session_state.sidebar_collapsed = True
 
+# FIX: trước đây "job" chỉ được khởi tạo ở tận cuối file (ngay trước khi
+# dùng để chain/finalize), nhưng nút mic (voice) mới thêm ở hàng nút trên
+# cùng lại tham chiếu `st.session_state.job` SỚM HƠN nhiều -> AttributeError
+# vì lúc đó session_state chưa hề có key "job". Dời khởi tạo lên đây, cùng
+# chỗ với các session_state khác, để bất kỳ đoạn code nào phía sau (dù ở
+# trên cùng hay dưới cùng) đều dùng được an toàn.
+if "job" not in st.session_state:
+    st.session_state.job = None
+
 # ---------------------------------------------------------
 # 3. STREAMLIT UI — tiêu đề (compact, tự co chữ trên màn hình hẹp) +
 # nút hamburger để mở/đóng sidebar.
@@ -1110,9 +1119,6 @@ def _finalize_job(job: dict):
         })
         return
 
-
-if "job" not in st.session_state:
-    st.session_state.job = None
 
 # A job that finished since the last poll gets resolved before we render
 # history, so it shows up as a normal completed turn below.
