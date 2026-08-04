@@ -720,10 +720,33 @@ st.markdown(
         width: 40px !important;
         height: 40px !important;
     }
+    /* Nút mic (voice) ngay bên trái nút "New chat" — cùng hàng, cùng kỹ
+    thuật position:fixed. Widget gốc st.audio_input hỗ trợ sẵn width=40
+    (px) + label_visibility="collapsed" nên không cần "chế" CSS ẩn label
+    như trước — chỉ còn phải định vị đúng chỗ trong hàng 3 nút. LƯU Ý:
+    khi đang ghi âm, chính widget này sẽ tự hiện thêm sóng âm/nút dừng —
+    phần đó có thể rộng hơn 40px lúc đang ghi (không cách nào tránh, vì
+    đó là UI ghi âm bắt buộc phải có để bấm dừng), nhưng lúc rảnh
+    (không ghi âm) nó co lại đúng 1 icon 40x40 như 2 nút kia.
+    */
+    .st-key-voice_btn_main {
+        position: fixed !important;
+        top: 0.85rem !important;
+        right: 6.8rem !important;   /* 3.85rem (lề nút New chat) + 2.5rem (40px rộng) + 0.45rem (khoảng cách) */
+        z-index: 999999 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+with st.container(key="voice_btn_main"):
+    audio_value = st.audio_input(
+        "Voice",
+        label_visibility="collapsed",
+        help="🎤 Nhắn bằng giọng nói",
+        width=40,
+        disabled=st.session_state.job is not None,
+    )
 with st.container(key="newchat_btn_main"):
     if st.button("", key="new_chat_main", icon=":material/edit_square:", help="New chat", use_container_width=True):
         _new_conversation()
@@ -918,9 +941,10 @@ def _advance_reveal(revealed: int, full_text: str, min_step: int = 2, max_step: 
 
 @st.fragment
 def _job_progress_fragment():
-    """Polls the active job and shows a live Stop button, plus whatever
-    text has streamed in so far for the current stage (typing effect), so
-    the user watches progress instead of a blank "⏳ ..." message.
+    """Polls the active job and shows whatever text has streamed in so far
+    for the current stage (typing effect), so the user watches progress
+    instead of a blank "⏳ ..." message. Does NOT render the Stop button
+    itself (see NOTE 2 below) — the caller renders that separately.
 
     Special case for "synthesis" (the Leader step): Groq can finish
     generating the ENTIRE answer in well under a second — faster than a
@@ -933,7 +957,7 @@ def _job_progress_fragment():
     at most ~0.5-0.7s of visual delay, never blocks on real network
     calls (the text is already fully in memory by then).
 
-    NOTE (fix): `st.fragment(run_every=...)` is a known Streamlit bug —
+    NOTE 1 (fix): `st.fragment(run_every=...)` is a known Streamlit bug —
     it silently does nothing on some versions/setups (confirmed by the
     Streamlit team, exact repro conditions not yet pinned down). Symptom
     was exactly this: dead silence during the whole job, then the full
@@ -944,7 +968,19 @@ def _job_progress_fragment():
     ourselves via `streamlit_autorefresh`, a small, battle-tested
     component the Streamlit community has used for years for exactly
     this purpose (more reliable here than the still-fairly-new
-    run_every)."""
+    run_every).
+
+    NOTE 2 (fix): the Stop button used to live INSIDE this fragment,
+    right next to the 80ms auto-refresh trigger — Zune reported that
+    clicking it sometimes did nothing. Root cause: this fragment reruns
+    itself ~12 times a second via `st_autorefresh`; a click and the timer
+    tick are two separate "please rerun this fragment" requests, and if
+    they land close together the click can lose the race and never get
+    processed by that particular rerun. A button that only needs to be
+    clickable (no live animation) has no reason to sit inside a
+    fast-looping fragment at all, so it's now rendered by the caller in
+    the plain (non-fragment, non-autorefreshing) part of the script,
+    where a click always gets a normal, uncontested full rerun."""
     job = st.session_state.job
     if job is None:
         return
@@ -983,8 +1019,6 @@ def _job_progress_fragment():
             if job["done"] and (job["error"] is not None or job["cancelled"] or finished_typing):
                 st.rerun()  # API done AND (reveal caught up, or error/cancel) -> hand off to finalize
                 return
-            if st.button("⏹ Stop", key="stop_button"):
-                _cancel_job(job)
             return
 
         # phase == "ensemble": cả 3 model đang chạy, chưa model Groq nào
@@ -1006,9 +1040,6 @@ def _job_progress_fragment():
                 reveal_lens[k] = revealed
                 shown = full_text[:revealed]
                 st.write((shown + " ▌") if shown else "_...thinking_")
-
-        if st.button("⏹ Stop", key="stop_button"):
-            _cancel_job(job)
         return
 
     if job["done"]:
@@ -1016,8 +1047,6 @@ def _job_progress_fragment():
         return
 
     st.info(f"⏳ {_STAGE_LABELS.get(job['stage'], 'Working...')}")
-    if st.button("⏹ Stop", key="stop_button"):
-        _cancel_job(job)
 
 
 def _finalize_job(job: dict):
@@ -1108,46 +1137,23 @@ if st.session_state.job is not None:
         st.write(job.get("display_user_text", job.get("user_text", "")))
     with st.chat_message("assistant"):
         _job_progress_fragment()
+        # Nút Stop nằm NGOÀI fragment ở trên (cố ý) — xem NOTE 2 trong
+        # docstring của _job_progress_fragment để biết lý do: bên trong
+        # fragment tự rerun 80ms/lần, click và tick tự động đôi khi "đụng"
+        # nhau khiến click bị mất. Ở đây, mỗi click luôn kích hoạt 1 lần
+        # rerun toàn trang bình thường, không phải cạnh tranh với gì cả.
+        if not job["done"]:
+            if st.button("⏹ Stop", key="stop_button"):
+                _cancel_job(job)
 
 # ---------------------------------------------------------
-# VOICE INPUT: bấm mic ghi âm -> tự động transcribe (Groq Whisper) -> gửi
-# thẳng vào chat như thể người dùng gõ tay, không cần bấm gửi thêm lần
-# nữa. `st.audio_input` giữ nguyên bản ghi cuối cùng qua các lần rerun
-# (nó không tự xoá), nên phải so sánh hash với lần xử lý trước để KHÔNG
-# transcribe lại + gửi lặp vô hạn cùng 1 đoạn ghi âm mỗi khi trang rerun.
+# VOICE INPUT (xử lý): widget mic thật (audio_value) đã được đặt lên hàng
+# nút trên cùng, cạnh New Chat/Menu (xem gần đầu file, khu vực CSS
+# .st-key-voice_btn_main) — ở đây chỉ xử lý dữ liệu ghi âm thu được.
 #
-# GHI CHÚ VỀ VIỆC "GỘP VÀO CHATBOX": `st.chat_input` là 1 component đóng
-# kín của Streamlit (không có API để nhét icon mic vào bên trong nó, khác
-# hẳn việc build UI kiểu ChatGPT từ đầu bằng HTML/JS thuần). Nên ở đây
-# dùng CSS bo góc + xoá khoảng cách để widget ghi âm nằm NGAY SÁT PHÍA
-# TRÊN ô chat, đọc thị giác như "1 thanh liền 2 tầng" thay vì icon nằm
-# bên trong ô nhập liệu thật. Nếu muốn icon mic nằm hẳn bên trong (giống
-# ChatGPT/Gemini pixel-perfect), cần viết 1 custom HTML/JS component
-# riêng (ghi âm bằng MediaRecorder API rồi gửi ngược data về Python) —
-# tốn công hơn hẳn, báo mình nếu muốn đi hướng đó.
-st.markdown(
-    """
-    <style>
-    /* Kéo sát khung ghi âm vào khung chat ngay bên dưới — bỏ khoảng
-    trắng mặc định của Streamlit giữa 2 widget để trông như 1 khối. */
-    .st-key-voice_bar {
-        margin-bottom: -1rem !important;
-    }
-    /* data-testid phỏng đoán theo đúng quy ước đặt tên của Streamlit
-    (stChatInput, stFileUploader, stTextInput, ... -> stAudioInput).
-    Nếu phiên bản Streamlit của bạn dùng tên khác, mở DevTools (F12) bấm
-    chuột phải vào khung ghi âm -> Inspect -> tìm thuộc tính data-testid
-    thật rồi đổi lại chuỗi bên dưới cho khớp. */
-    [data-testid="stAudioInput"] {
-        border-radius: 18px 18px 0 0 !important;
-        border-bottom: none !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-with st.container(key="voice_bar"):
-    audio_value = st.audio_input("🎤 Hoặc nhắn bằng giọng nói", disabled=st.session_state.job is not None)
+# `st.audio_input` giữ nguyên bản ghi cuối cùng qua các lần rerun (nó
+# không tự xoá), nên phải so sánh hash với lần xử lý trước để KHÔNG
+# transcribe lại + gửi lặp vô hạn cùng 1 đoạn ghi âm mỗi khi trang rerun.
 voice_prompt = None
 if audio_value is not None and st.session_state.job is None:
     audio_bytes = audio_value.getvalue()
