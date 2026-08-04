@@ -743,6 +743,15 @@ st.markdown(
         top: 0.85rem !important;
         right: 6.8rem !important;   /* 3.85rem (lề nút New chat) + 2.5rem (40px rộng) + 0.45rem (khoảng cách) */
         z-index: 999999 !important;
+        width: 40px !important;   /* THIẾU dòng này là lý do không thấy nút: container mặc định rộng 100% viewport, đẩy widget 40px thật sự ra khỏi màn hình dù đã position:fixed đúng chỗ */
+    }
+    /* Phòng hờ thêm 1 lớp nữa ngay trên chính widget (không chỉ container
+    ngoài) — testid "stAudioInput" đã xác nhận là tên thật (soi trực tiếp
+    trong file JS đã build của Streamlit, không còn đoán mò như lần
+    trước), phòng khi tham số width=40 truyền vào st.audio_input không áp
+    dụng đúng như mong đợi. */
+    .st-key-voice_btn_main [data-testid="stAudioInput"] {
+        width: 40px !important;
     }
     </style>
     """,
